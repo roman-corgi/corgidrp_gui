@@ -82,6 +82,71 @@ def text_dialog(parent, title: str, text: str, mono: bool = True):
     return d
 
 
+class FolderPickerDialog(QtWidgets.QFileDialog):
+    """Choose one or more folders, with an *include subfolders* switch and a filename pattern.
+
+    Qt's own (non-native) directory dialog, with multi-selection switched on in its views:
+    Ctrl/Cmd-click or Shift-click selects several folders, then *Choose*.
+    """
+
+    def __init__(self, parent=None, caption="Add every FITS file in one or more folders", start: str | None = None,
+                 pattern: str = "*.fits"):
+        super().__init__(parent, caption, start or os.path.expanduser("~"))
+        self.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog, True)
+        self.setOption(QtWidgets.QFileDialog.Option.ShowDirsOnly, True)
+        self.setFileMode(QtWidgets.QFileDialog.FileMode.Directory)
+        self.setLabelText(QtWidgets.QFileDialog.DialogLabel.Accept, "Add folders")
+        for view in self.findChildren(QtWidgets.QListView) + self.findChildren(QtWidgets.QTreeView):
+            if isinstance(view.model(), QtGui.QFileSystemModel) or view.objectName() in ("listView", "treeView"):
+                view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        grid = self.layout()
+        row = grid.rowCount() if isinstance(grid, QtWidgets.QGridLayout) else 0
+        extras = QtWidgets.QHBoxLayout()
+        self.recursive_cb = QtWidgets.QCheckBox("Include subfolders")
+        extras.addWidget(self.recursive_cb)
+        extras.addSpacing(12)
+        extras.addWidget(QtWidgets.QLabel("Filename pattern"))
+        self.pattern_edit = QtWidgets.QLineEdit(pattern)
+        self.pattern_edit.setMaximumWidth(160)
+        self.pattern_edit.setToolTip("Glob matched against file names in each folder, e.g. *_l1_.fits")
+        extras.addWidget(self.pattern_edit)
+        extras.addStretch(1)
+        hint = QtWidgets.QLabel("Ctrl/Cmd-click (or Shift-click) to select several folders")
+        hint.setProperty("role", "hint")
+        extras.addWidget(hint)
+        if isinstance(grid, QtWidgets.QGridLayout):
+            grid.addLayout(extras, row, 0, 1, grid.columnCount())
+        else:  # pragma: no cover - layout type differs between Qt versions
+            grid.addLayout(extras)
+
+    def folders(self) -> list[str]:
+        """The selected folders (or the current one when none is highlighted)."""
+        out = []
+        for f in self.selectedFiles():
+            if os.path.isdir(f) and f not in out:
+                out.append(f)
+        return out
+
+    @property
+    def recursive(self) -> bool:
+        return self.recursive_cb.isChecked()
+
+    @property
+    def pattern(self) -> str:
+        return self.pattern_edit.text().strip() or "*.fits"
+
+
+def pick_folders(parent, caption: str, start: str | None = None) -> tuple[list[str], bool, str]:
+    """Run a :class:`FolderPickerDialog`; returns ``(folders, recursive, pattern)``, folders empty when cancelled."""
+    dlg = FolderPickerDialog(parent, caption, start)
+    try:
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return [], False, "*.fits"
+        return dlg.folders(), dlg.recursive, dlg.pattern
+    finally:
+        dlg.deleteLater()
+
+
 class InputsDialog(QtWidgets.QDialog):
     """Edit a recipe's input file list."""
 
@@ -122,10 +187,11 @@ class InputsDialog(QtWidgets.QDialog):
         self._add(paths)
 
     def add_folder(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Add every FITS file in a folder", self._start)
-        if d:
-            import glob as _glob
-            self._add(sorted(_glob.glob(os.path.join(d, "*.fits"))))
+        folders, recursive, pattern = pick_folders(self, "Add every FITS file in one or more folders", self._start)
+        if folders:
+            from ..core.parser import files_in_folders
+            self._add(files_in_folders(folders, pattern, recursive))
+            self._start = folders[0]
 
     def _add(self, paths):
         have = set(self.inputs())

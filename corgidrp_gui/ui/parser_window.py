@@ -17,11 +17,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 from .. import theming
 from ..backend import default_backend
 from ..core import catalog_cache
-from ..core.parser import GroupAnalysis, FileRecord, analyze, analyze_group, scan_files
+from ..core.parser import GroupAnalysis, FileRecord, analyze, analyze_group, files_in_folders, scan_files
 from ..core.queue_items import QueueRequest
 from ..core.splitting import SplitSpec
 from .base import ThemedWindow
-from .dialogs import RecipePreviewDialog, text_dialog
+from .dialogs import RecipePreviewDialog, pick_folders, text_dialog
 from .queue_bridge import dump_recipes
 from .models import FileTableModel, GroupTableModel, ObjectRole
 from .widgets.themed import Chip, ElidedLabel, Panel, SectionLabel, section
@@ -381,13 +381,20 @@ class ParserWindow(ThemedWindow):
             self.add_files(paths)
 
     def add_folder_dialog(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Add every FITS file in a folder", self._last_dir)
-        if d:
-            self._last_dir = d
-            paths = self.backend.glob_fits(d, "*.fits", recursive=False)
-            if not paths:
-                self.statusBar().showMessage(f"No .fits files in {d}", 5000)
-            self.add_files(paths)
+        folders, recursive, pattern = pick_folders(self, "Add every FITS file in one or more folders", self._last_dir)
+        if folders:
+            self.add_folders(folders, pattern, recursive)
+
+    def add_folders(self, folders: list[str], pattern: str = "*.fits", recursive: bool = False):
+        """Add every file matching ``pattern`` in the folders (and, optionally, their subfolders)."""
+        self._last_dir = folders[0]
+        paths = files_in_folders(folders, pattern, recursive, self.backend)
+        where = folders[0] if len(folders) == 1 else f"{len(folders)} folders"
+        if not paths:
+            self.statusBar().showMessage(f"No files matching {pattern} in {where}", 5000)
+        else:
+            self.log_line(f"{len(paths)} files matching {pattern} in {where}" + (" (with subfolders)" if recursive else ""))
+        self.add_files(paths)
 
     def add_wildcard_dialog(self):
         start = os.path.join(self._last_dir, "*_l1_.fits")

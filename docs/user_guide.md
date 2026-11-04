@@ -50,8 +50,11 @@ Closing the Launcher closes the application.
 
 ![Recipe Parser](screenshots/roman_parser.png)
 
-1. **Add files** with the buttons (file dialog, whole folder, or a glob pattern such as
-   `/data/night1/*_l1_.fits`). Only headers are read. The table shows the keywords the walker
+1. **Add files** with the buttons (file dialog, one or more folders, or a glob pattern such as
+   `/data/night1/*_l1_.fits`). *Add folder…* opens a folder chooser where Ctrl/Cmd-click or
+   Shift-click selects several folders at once; tick *Include subfolders* to descend into
+   them and change the *Filename pattern* (default `*.fits`) to take only, say, `*_l1_.fits`.
+   The Builder's *Edit list… → Add folder…* works the same way. Only headers are read. The table shows the keywords the walker
    branches on (DATALVL, VISTYPE, DPAMNAME, ISPC, EXPTIME, EMGAIN_C, KGAINPAR ...). Unreadable
    files are red; double-click a file to open it with the system's default FITS viewer.
 2. Files are **grouped** by DATALVL, VISTYPE, DPAMNAME and ISPC, calibration visits first.

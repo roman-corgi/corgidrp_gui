@@ -21,7 +21,7 @@ from .splitting import Batch, SplitSpec, batch_recipe_name, split_records
 
 __all__ = [
     "DISPLAY_KEYS", "GROUP_KEYS", "FileRecord", "Facts", "Recommendation", "FileGroup",
-    "scan_files", "group_files", "split_group", "recommend", "build_recipes", "normalize_chains",
+    "files_in_folders", "scan_files", "group_files", "split_group", "recommend", "build_recipes", "normalize_chains",
     "GroupAnalysis", "analyze_group", "analyze",
 ]
 
@@ -151,6 +151,21 @@ def _short_vistype(v) -> str:
 # --------------------------------------------------------------------------- #
 # scanning and grouping
 # --------------------------------------------------------------------------- #
+def files_in_folders(folders: list[str], pattern: str = "*.fits", recursive: bool = False,
+                     backend: Backend | None = None) -> list[str]:
+    """Every file matching ``pattern`` in the given folders (optionally their subfolders),
+    de-duplicated and sorted; folders are visited in the order given."""
+    backend = backend or default_backend()
+    seen: set[str] = set()
+    out: list[str] = []
+    for d in folders:
+        for f in backend.glob_fits(d, pattern or "*.fits", recursive=recursive):
+            if f not in seen:
+                seen.add(f)
+                out.append(f)
+    return out
+
+
 def scan_files(paths: list[str], backend: Backend | None = None, progress=None) -> list[FileRecord]:
     """Read headers (only) of every path. ``progress(i, n)`` is called per file."""
     backend = backend or default_backend()

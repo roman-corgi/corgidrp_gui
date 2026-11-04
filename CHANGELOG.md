@@ -9,6 +9,8 @@
 - Recipe Builder: Start from template… button and dialog (searchable, with a step preview).
 - Parser and Builder: split inputs into several recipes by a maximum number of files per
   recipe and/or by header keywords (VISITID, DPAMNAME, ...); all parts queue together.
+- Add folder… (Parser and Builder inputs) accepts several folders at once, with an
+  include-subfolders switch and a filename pattern.
 
 ## 0.1.0 — 2026-10-20
 

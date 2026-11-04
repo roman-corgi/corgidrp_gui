@@ -160,3 +160,45 @@ def test_parser_window_split_controls(app, mock_l1_files, tiny_template, tmp_pat
     assert win.jobs.wait_idle(120000)
     assert win.split_keys_edit.text() == "VISITID" and win.group_model.rowCount() == 1
     win.close()
+
+
+def test_files_in_folders_and_add_folders(app, mock_l1_files, tmp_path):
+    from corgidrp_gui.core.parser import files_in_folders
+    from corgidrp_gui.ui.parser_window import ParserWindow
+    a, b = tmp_path / "night_a", tmp_path / "night_b"
+    (b / "sub").mkdir(parents=True)
+    a.mkdir()
+    import shutil
+    pa = shutil.copy(mock_l1_files[0], a / "x_l1_.fits")
+    pb = shutil.copy(mock_l1_files[1], b / "sub" / "y_l1_.fits")
+    (a / "notes.txt").write_text("not fits")
+    assert files_in_folders([str(a), str(b)]) == [str(pa)]
+    assert files_in_folders([str(a), str(b)], recursive=True) == [str(pa), str(pb)]
+    assert files_in_folders([str(a), str(a)], "*_l1_.fits") == [str(pa)]
+    assert files_in_folders([str(b)], "x*", recursive=True) == []
+    win = ParserWindow()
+    win.show()
+    win.add_folders([str(a), str(b)], recursive=True)
+    assert win.jobs.wait_idle(120000)
+    assert win.file_model.rowCount() == 2 and win._last_dir == str(a)
+    win.clear_files()
+    win.close()
+
+
+def test_folder_picker_dialog_allows_multiple_selection(app, tmp_path):
+    from qtpy import QtWidgets
+    from corgidrp_gui.ui.dialogs import FolderPickerDialog
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    d = FolderPickerDialog(None, "pick", str(tmp_path))
+    views = [v for v in d.findChildren(QtWidgets.QListView) + d.findChildren(QtWidgets.QTreeView)
+             if v.objectName() in ("listView", "treeView")]
+    assert views and all(v.selectionMode() == QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection for v in views)
+    assert d.pattern == "*.fits" and not d.recursive
+    d.pattern_edit.setText("  ")
+    assert d.pattern == "*.fits"
+    d.recursive_cb.setChecked(True)
+    assert d.recursive
+    d.close()
+    d.deleteLater()
+    app.processEvents()
