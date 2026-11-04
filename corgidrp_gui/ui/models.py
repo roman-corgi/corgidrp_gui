@@ -53,7 +53,7 @@ class FileTableModel(QtCore.QAbstractTableModel):
         self.set_records([])
 
     def set_group_keys(self, analyses: list[GroupAnalysis]):
-        self._group_of = {f.path: a.group.key for a in analyses for f in a.group.files}
+        self._group_of = {f.path: a.group.override_key for a in analyses for f in a.group.files}
         if self.records:
             self.dataChanged.emit(self.index(0, 0), self.index(len(self.records) - 1, self.columnCount() - 1))
 
@@ -173,5 +173,5 @@ class GroupTableModel(QtCore.QAbstractTableModel):
         if role == ObjectRole:
             return ga
         if role == GroupKeyRole:
-            return ga.group.key
+            return ga.group.override_key
         return None

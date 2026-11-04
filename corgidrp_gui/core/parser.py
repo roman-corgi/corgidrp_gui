@@ -17,10 +17,11 @@ from typing import Any
 
 from ..backend import Backend, FitsHeaders, default_backend
 from .recipes import Recipe
+from .splitting import Batch, SplitSpec, batch_recipe_name, split_records
 
 __all__ = [
     "DISPLAY_KEYS", "GROUP_KEYS", "FileRecord", "Facts", "Recommendation", "FileGroup",
-    "scan_files", "group_files", "recommend", "build_recipes", "normalize_chains",
+    "scan_files", "group_files", "split_group", "recommend", "build_recipes", "normalize_chains",
     "GroupAnalysis", "analyze_group", "analyze",
 ]
 
@@ -113,6 +114,7 @@ class FileGroup:
     key: tuple
     files: list[FileRecord]
     recommendation: Recommendation | None = None
+    batch: Batch | None = None                 #: set when the group was split by the user's rules
 
     @property
     def label(self) -> str:
@@ -122,7 +124,18 @@ class FileGroup:
             bits.append(str(dpam))
         if ispc == 1:
             bits.append("PC")
+        if self.batch is not None and self.batch.label:
+            bits.append(self.batch.label)
         return " · ".join(bits)
+
+    @property
+    def batch_slug(self) -> str:
+        return self.batch.slug if self.batch is not None else ""
+
+    @property
+    def override_key(self) -> tuple:
+        """Identifies the group *and* its batch; what manual template overrides are keyed by."""
+        return (*self.key, self.batch_slug)
 
     @property
     def paths(self) -> list[str]:
@@ -166,6 +179,13 @@ def group_files(records: list[FileRecord]) -> list[FileGroup]:
         return (lvl == "unreadable", is_cal, _LEVEL_RANK.get(str(lvl), 9), str(vistype), str(dpam), str(ispc))
 
     return [FileGroup(k, v) for k, v in sorted(groups.items(), key=sort_key)]
+
+
+def split_group(group: FileGroup, spec: SplitSpec | None) -> list[FileGroup]:
+    """Apply the user's splitting rules to one group: one FileGroup per batch."""
+    if spec is None or not spec.active or group.key[0] == "unreadable":
+        return [group]
+    return [FileGroup(group.key, b.items, batch=b) for b in split_records(group.files, spec)]
 
 
 def compute_facts(records: list[FileRecord]) -> Facts:
@@ -413,6 +433,10 @@ def analyze_group(group: FileGroup, outputdir: str, override: str | None = None)
         ga.message = describe_exception(exc)
         ga.log = traceback.format_exc()
         return ga
+    if group.batch is not None and group.batch.slug:
+        for chain in ga.chains:
+            for r in chain:
+                r.name = batch_recipe_name(r.name, group.batch)
     missing, skipped = _calib_report(ga.chains)
     if skipped:
         ga.status, ga.message = "warn", f"{skipped} step{'s' if skipped != 1 else ''} will be skipped (missing calibration)"
@@ -425,15 +449,20 @@ def analyze_group(group: FileGroup, outputdir: str, override: str | None = None)
 
 
 def analyze(records: list[FileRecord], outputdir: str, overrides: dict[tuple, str] | None = None,
-            progress=None) -> list[GroupAnalysis]:
-    """Group the records and analyze every group. ``progress(i, n, label)`` per group."""
+            progress=None, split: SplitSpec | None = None) -> list[GroupAnalysis]:
+    """Group the records, split each group per ``split`` and analyze every batch.
+
+    ``overrides`` is keyed by :attr:`FileGroup.override_key` (an unsplit group also accepts its
+    plain :attr:`FileGroup.key`). ``progress(i, n, label)`` per batch.
+    """
     overrides = overrides or {}
-    groups = group_files(records)
+    groups = [sg for g in group_files(records) for sg in split_group(g, split)]
     out = []
     for i, g in enumerate(groups):
         if progress:
             progress(i, len(groups), g.label)
-        out.append(analyze_group(g, outputdir, overrides.get(g.key)))
+        override = overrides.get(g.override_key, overrides.get(g.key) if g.batch is None else None)
+        out.append(analyze_group(g, outputdir, override))
     if progress:
         progress(len(groups), len(groups), "done")
     return out

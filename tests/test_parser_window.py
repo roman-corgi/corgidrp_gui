@@ -104,3 +104,59 @@ def test_parser_window_under_every_theme(app, key):
     assert win.isVisible()
     win.close()
     theming.theme_manager().set_theme("roman", persist=False)
+
+
+def test_core_analyze_with_split(mock_l1_files, tiny_template, tmp_path):
+    from corgidrp_gui.core.parser import analyze, scan_files, split_group, group_files
+    from corgidrp_gui.core.splitting import SplitSpec
+    recs = scan_files(mock_l1_files)
+    groups = group_files(recs)
+    assert len(groups) == 1 and len(split_group(groups[0], None)) == 1
+    parts = split_group(groups[0], SplitSpec(max_files=1))
+    assert [g.label for g in parts] == [groups[0].label + " · part 1/2", groups[0].label + " · part 2/2"]
+    assert parts[0].override_key != parts[1].override_key and parts[0].override_key[:4] == groups[0].key
+    # overrides are per batch and recipes get a distinguishing suffix
+    res = analyze(recs, str(tmp_path / "out"), overrides={parts[1].override_key: tiny_template}, split=SplitSpec(max_files=1))
+    assert [a.override for a in res] == [None, tiny_template]
+    assert res[1].status == "ok" and res[1].chains[0][0].inputs == [mock_l1_files[1]]
+    assert res[1].chains[0][0].name == "tiny_part2of2"
+    # by keyword: both mock frames share a VISITID -> one batch, no suffix
+    res = analyze(recs, str(tmp_path / "out"), overrides={}, split=SplitSpec(keywords=["VISITID"]))
+    assert len(res) == 1 and res[0].group.batch is not None and "VISITID=" in res[0].group.label
+
+
+def test_parser_window_split_controls(app, mock_l1_files, tiny_template, tmp_path):
+    from corgidrp_gui.ui.parser_window import ParserWindow
+    win = ParserWindow()
+    win.show()
+    win.outputdir_edit.setText(str(tmp_path / "reduced"))
+    win.add_files(mock_l1_files)
+    assert win.jobs.wait_idle(120000)
+    assert win.group_model.rowCount() == 1
+    win.set_split(max_files=1)
+    assert win.jobs.wait_idle(120000)
+    assert win.group_model.rowCount() == 2 and "part 1/2" in win.group_model.rows[0].group.label
+    assert "1 files" in win.split_label.text()
+    # an override applies to one batch only, and queueing yields one recipe per batch
+    win.group_view.selectRow(1)
+    win.set_override(tiny_template)
+    assert win.jobs.wait_idle(120000)
+    assert win.group_model.rows[1].status == "ok" and win.group_model.rows[0].override is None
+    seen = []
+    win.queue_handler = lambda r: seen.append(r) or True
+    win.group_view.selectAll()
+    win.set_override(tiny_template)
+    assert win.jobs.wait_idle(120000)
+    win.queue_all()
+    assert len(seen) == 1 and seen[0].n_recipes == 2
+    names = [c[0].name for c in seen[0].chains]
+    assert names == ["tiny_part1of2", "tiny_part2of2"]
+    assert [c[0].inputs for c in seen[0].chains] == [[mock_l1_files[0]], [mock_l1_files[1]]]
+    # the file list highlights the selected batch only
+    win.group_view.clearSelection()
+    win.group_view.selectRow(0)
+    assert len(win.file_view.selectionModel().selectedRows()) == 1
+    win.set_split(max_files=0, keywords="visitid")
+    assert win.jobs.wait_idle(120000)
+    assert win.split_keys_edit.text() == "VISITID" and win.group_model.rowCount() == 1
+    win.close()

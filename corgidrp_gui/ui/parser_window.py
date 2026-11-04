@@ -19,6 +19,7 @@ from ..backend import default_backend
 from ..core import catalog_cache
 from ..core.parser import GroupAnalysis, FileRecord, analyze, analyze_group, scan_files
 from ..core.queue_items import QueueRequest
+from ..core.splitting import SplitSpec
 from .base import ThemedWindow
 from .dialogs import RecipePreviewDialog, text_dialog
 from .queue_bridge import dump_recipes
@@ -45,7 +46,8 @@ class ParserWindow(ThemedWindow):
         self.backend = backend or default_backend()
         self.jobs = JobRunner()
         self.settings = theming.theme_manager().settings()
-        self._overrides: dict[tuple, str] = {}
+        self._overrides: dict[tuple, str] = {}   # keyed by FileGroup.override_key
+        self._split = SplitSpec()
         self.queue_handler = None      # callable(QueueRequest) -> bool; default saves JSON files
         self.builder_handler = None    # callable(Recipe)
         self.file_model = FileTableModel()
@@ -189,6 +191,29 @@ class ParserWindow(ThemedWindow):
         crow.addWidget(b2)
         ctrl.layout().addLayout(crow)
 
+        srow = QtWidgets.QHBoxLayout()
+        srow.addWidget(QtWidgets.QLabel("Max files per recipe"))
+        self.max_files_spin = QtWidgets.QSpinBox()
+        self.max_files_spin.setRange(0, 100000)
+        self.max_files_spin.setSpecialValueText("no limit")
+        self.max_files_spin.setToolTip("Groups with more files than this are cut into several recipes "
+                                       "(part 1/n, 2/n, ...) to bound memory use. 0 = no limit.")
+        self.max_files_spin.editingFinished.connect(self._on_split_changed)
+        srow.addWidget(self.max_files_spin)
+        srow.addSpacing(gap)
+        srow.addWidget(QtWidgets.QLabel("Split by keywords"))
+        self.split_keys_edit = QtWidgets.QLineEdit()
+        self.split_keys_edit.setPlaceholderText("e.g. VISITID, DPAMNAME  (files with different values go into different recipes)")
+        self.split_keys_edit.setClearButtonEnabled(True)
+        self.split_keys_edit.setToolTip("Comma-separated header keywords (extension header first, then primary). "
+                                        "Each distinct combination of values becomes its own recipe.")
+        self.split_keys_edit.editingFinished.connect(self._on_split_changed)
+        srow.addWidget(self.split_keys_edit, 2)
+        self.split_label = QtWidgets.QLabel("")
+        self.split_label.setProperty("role", "hint")
+        srow.addWidget(self.split_label, 1)
+        ctrl.layout().addLayout(srow)
+
         brow = QtWidgets.QHBoxLayout()
         self.reparse_btn = QtWidgets.QPushButton("Re-parse")
         self.reparse_btn.clicked.connect(self.reparse)
@@ -264,6 +289,10 @@ class ParserWindow(ThemedWindow):
         s = self.settings
         self.outputdir_edit.setText(s.value("parser/outputdir", "", type=str))
         self.cpgs_edit.setText(s.value("parser/cpgs_xml", "", type=str))
+        self.max_files_spin.setValue(s.value("parser/split_max_files", 0, type=int))
+        self.split_keys_edit.setText(s.value("parser/split_keywords", "", type=str))
+        self._split = self.split_spec()
+        self.split_label.setText(self._split.describe() if self._split.active else "")
         self._last_dir = s.value("parser/last_dir", self.backend.home(), type=str)
         geo = s.value("parser/geometry")
         if geo is not None:
@@ -273,6 +302,8 @@ class ParserWindow(ThemedWindow):
         s = self.settings
         s.setValue("parser/outputdir", self.outputdir_edit.text())
         s.setValue("parser/cpgs_xml", self.cpgs_edit.text())
+        s.setValue("parser/split_max_files", self.max_files_spin.value())
+        s.setValue("parser/split_keywords", self.split_keys_edit.text())
         s.setValue("parser/last_dir", self._last_dir)
         s.setValue("parser/geometry", self.saveGeometry())
         super().closeEvent(event)
@@ -281,6 +312,27 @@ class ParserWindow(ThemedWindow):
     @property
     def outputdir(self) -> str:
         return self.outputdir_edit.text().strip()
+
+    def split_spec(self) -> SplitSpec:
+        """The splitting rules as currently entered in the controls."""
+        return SplitSpec(max_files=self.max_files_spin.value(),
+                         keywords=SplitSpec.parse_keywords(self.split_keys_edit.text()))
+
+    def set_split(self, max_files: int = 0, keywords: str | list[str] = ""):
+        """Set the splitting rules programmatically and re-parse."""
+        self.max_files_spin.setValue(max_files)
+        self.split_keys_edit.setText(keywords if isinstance(keywords, str) else ", ".join(keywords))
+        self._on_split_changed()
+
+    def _on_split_changed(self):
+        spec = self.split_spec()
+        self.split_keys_edit.setText(spec.keywords_text)   # normalised form
+        if spec == self._split:
+            return
+        self._split = spec
+        self.split_label.setText(spec.describe() if spec.active else "")
+        if self.file_model.rowCount() and not self.jobs.busy:
+            self.reparse()
 
     def log_line(self, text: str):
         stamp = _dt.datetime.now().strftime("%H:%M:%S")
@@ -392,7 +444,10 @@ class ParserWindow(ThemedWindow):
             return
         self._set_busy(True, "parsing")
         self.log_line(f"parsing {len(records)} files (headers only)…")
-        self.jobs.start(analyze, records, self.outputdir, dict(self._overrides),
+        self._split = self.split_spec()
+        if self._split.active:
+            self.log_line("splitting: " + self._split.describe())
+        self.jobs.start(analyze, records, self.outputdir, dict(self._overrides), split=self._split,
                         on_done=self._on_analyzed, on_fail=self._on_job_failed, on_progress=self._on_progress)
 
     def _on_analyzed(self, analyses: list[GroupAnalysis]):
@@ -402,7 +457,9 @@ class ParserWindow(ThemedWindow):
             self.log_line(f"group {i + 1} ({a.group.label}, {len(a.group.files)} files): {a.recipe_summary or '—'} · {a.message}")
         n_ok = sum(1 for a in analyses if a.chains)
         self._set_busy(False)
-        self.statusBar().showMessage(f"{self.file_model.rowCount()} files · {len(analyses)} groups · {n_ok} with recipes ready")
+        n_batches = sum(1 for a in analyses if a.group.batch is not None)
+        what = f"{len(analyses)} groups" if not n_batches else f"{len(analyses)} batches"
+        self.statusBar().showMessage(f"{self.file_model.rowCount()} files · {what} · {n_ok} with recipes ready")
         if analyses and not self.group_view.selectionModel().hasSelection():
             self.group_view.selectRow(0)
         self._update_buttons()
@@ -439,7 +496,7 @@ class ParserWindow(ThemedWindow):
             smodel = self.file_view.selectionModel()
             smodel.clearSelection()
             flags = QtCore.QItemSelectionModel.SelectionFlag.Select | QtCore.QItemSelectionModel.SelectionFlag.Rows
-            for r in self.file_model.rows_for_group(a.group.key):
+            for r in self.file_model.rows_for_group(a.group.override_key):
                 smodel.select(self.file_proxy.mapFromSource(self.file_model.index(r, 0)), flags)
         elif not sel:
             self.why.clear()
@@ -478,9 +535,9 @@ class ParserWindow(ThemedWindow):
         for r in rows:
             a = self.group_model.rows[r]
             if template:
-                self._overrides[a.group.key] = template
+                self._overrides[a.group.override_key] = template
             else:
-                self._overrides.pop(a.group.key, None)
+                self._overrides.pop(a.group.override_key, None)
             self.group_model.set_status(r, "working")
         self._set_busy(True, "resolving")
         self.jobs.start(self._reanalyze_rows, rows, template, on_done=self._on_rows_reanalyzed, on_fail=self._on_job_failed)

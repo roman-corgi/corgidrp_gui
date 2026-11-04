@@ -19,6 +19,7 @@ from ..backend import default_backend
 from ..core import catalog_cache
 from ..core.queue_items import QueueRequest
 from ..core.recipes import Issue, Recipe, RecipeStep, guess_start_level, validate_recipe
+from ..core.splitting import SplitSpec, batch_recipe_name, split_paths
 from ..core.steps import MISSING, SAVE_STEP_NAME, StepCatalog
 from ..core.values import format_value
 from .base import ThemedWindow
@@ -51,6 +52,9 @@ class BuilderWindow(ThemedWindow):
         self._undo: list[dict] = []
         self._dirty = False
         self._last_dir = self.settings.value("builder/last_dir", self.backend.home(), type=str)
+        self.split = SplitSpec(max_files=self.settings.value("builder/split_max_files", 0, type=int),
+                               keywords=SplitSpec.parse_keywords(self.settings.value("builder/split_keywords", "", type=str)))
+        self._headers_cache: dict = {}
         self.steps_model = RecipeStepsModel(self.catalog, Recipe(name="new_recipe"))
         self.catalog_model = StepCatalogModel(self.catalog)
         self.args_model = ArgTableModel()
@@ -303,6 +307,31 @@ class BuilderWindow(ThemedWindow):
         fl.addWidget(self.chunks_cb)
         fl.addStretch(1)
         g.addLayout(fl, 3, 1, 1, 2)
+        g.addWidget(QtWidgets.QLabel("Split into"), 4, 0)
+        sl = QtWidgets.QHBoxLayout()
+        sl.setContentsMargins(0, 0, 0, 0)
+        self.max_files_spin = QtWidgets.QSpinBox()
+        self.max_files_spin.setRange(0, 100000)
+        self.max_files_spin.setSpecialValueText("no limit")
+        self.max_files_spin.setToolTip("Maximum input files per recipe; more inputs than this are split into "
+                                       "several recipes (part 1/n, 2/n, ...) that are queued together. 0 = no limit.")
+        self.max_files_spin.setValue(self.split.max_files)
+        self.max_files_spin.editingFinished.connect(self._on_split_changed)
+        sl.addWidget(QtWidgets.QLabel("max files"))
+        sl.addWidget(self.max_files_spin)
+        sl.addSpacing(8)
+        sl.addWidget(QtWidgets.QLabel("by"))
+        self.split_keys_edit = QtWidgets.QLineEdit()
+        self.split_keys_edit.setPlaceholderText("header keywords, e.g. VISITID, DPAMNAME")
+        self.split_keys_edit.setClearButtonEnabled(True)
+        self.split_keys_edit.setToolTip("Inputs whose headers differ in any of these keywords go into separate recipes.")
+        self.split_keys_edit.setText(self.split.keywords_text)
+        self.split_keys_edit.editingFinished.connect(self._on_split_changed)
+        sl.addWidget(self.split_keys_edit, 1)
+        g.addLayout(sl, 4, 1, 1, 2)
+        self.split_label = ElidedLabel("")
+        self.split_label.setProperty("role", "hint")
+        g.addWidget(self.split_label, 5, 1, 1, 2)
         g.setColumnStretch(1, 1)
         insp_panel.layout().addLayout(g)
         self.inspector_label = SectionLabel("Inspector")
@@ -428,12 +457,28 @@ class BuilderWindow(ThemedWindow):
         if path:
             self.save_recipe(path)
 
-    def save_recipe(self, path: str):
-        self.recipe.save(path)
+    def save_recipe(self, path: str) -> list[str]:
+        """Write the recipe; with an active split, one file per batch (``<stem>_<batch>.json``)."""
+        recipes = self.split_recipes()
+        written = []
+        if len(recipes) == 1:
+            self.recipe.save(path)
+            written.append(path)
+        else:
+            stem, ext = os.path.splitext(path)
+            for r in recipes:
+                suffix = r.name[len(self.recipe.name):] if r.name.startswith(self.recipe.name) else "_" + r.name
+                p = f"{stem}{suffix}{ext or '.json'}"
+                r.save(p)
+                written.append(p)
         self._last_dir = os.path.dirname(path)
         self._dirty = False
         self._refresh_status()
-        self.statusBar().showMessage(f"Saved {path}", 6000)
+        if len(written) == 1:
+            self.statusBar().showMessage(f"Saved {path}", 6000)
+        else:
+            self.statusBar().showMessage(f"Saved {len(written)} recipes: {os.path.basename(written[0])} … {os.path.basename(written[-1])}", 8000)
+        return written
 
     def save_as_template_dialog(self):
         import corgidrp
@@ -628,6 +673,60 @@ class BuilderWindow(ThemedWindow):
         self._on_recipe_changed()
         self._refresh_header()
         self.statusBar().showMessage(f"Added {len(new)} input file{'s' if len(new) != 1 else ''}; {len(self.recipe.inputs)} total", 6000)
+
+    # ---------------------------------------------------------------- splitting
+    def _on_split_changed(self):
+        spec = SplitSpec(max_files=self.max_files_spin.value(),
+                         keywords=SplitSpec.parse_keywords(self.split_keys_edit.text()))
+        self.split_keys_edit.setText(spec.keywords_text)
+        if spec != self.split:
+            self.split = spec
+            self._refresh_split_label()
+
+    def set_split(self, max_files: int = 0, keywords: str | list[str] = ""):
+        self.max_files_spin.setValue(max_files)
+        self.split_keys_edit.setText(keywords if isinstance(keywords, str) else ", ".join(keywords))
+        self._on_split_changed()
+
+    def _headers_of(self, path: str):
+        h = self._headers_cache.get(path)
+        if h is None:
+            h = self.backend.read_headers(path)
+            self._headers_cache[path] = h
+        return h
+
+    def split_batches(self):
+        """The input batches the current split rules produce (one when nothing is split)."""
+        if not self.recipe.inputs:
+            return []
+        return split_paths(self.recipe.inputs, self.split, self._headers_of if self.split.keywords else None)
+
+    def split_recipes(self) -> list[Recipe]:
+        """Copies of the recipe, one per input batch, named ``<name>_<batch>``."""
+        batches = self.split_batches()
+        if len(batches) <= 1:
+            return [self.recipe.copy()]
+        out = []
+        for b in batches:
+            r = self.recipe.copy()
+            r.inputs = list(b.items)
+            r.name = batch_recipe_name(self.recipe.name, b)
+            out.append(r)
+        return out
+
+    def _refresh_split_label(self):
+        if not self.split.active or not self.recipe.inputs:
+            self.split_label.setFullText("")
+            self.split_label.setToolTip("")
+            return
+        batches = self.split_batches()
+        if len(batches) <= 1:
+            self.split_label.setFullText(f"{self.split.describe()}: all {len(self.recipe.inputs)} files fit in one recipe")
+            self.split_label.setToolTip("")
+            return
+        parts = [f"{b.label} ({len(b.items)})" for b in batches]
+        self.split_label.setFullText(f"→ {len(batches)} recipes: " + ", ".join(parts))
+        self.split_label.setToolTip("\n".join(f"{batch_recipe_name(self.recipe.name, b)}: {len(b.items)} files" for b in batches))
 
     def edit_inputs(self):
         dlg = InputsDialog(self.recipe.inputs, self, self._last_dir)
@@ -848,7 +947,9 @@ class BuilderWindow(ThemedWindow):
         text_dialog(self, f"Validation: {sum(i.severity == 'error' for i in issues)} errors, {sum(i.severity == 'warning' for i in issues)} warnings", text, mono=False)
 
     def view_json(self):
-        RecipePreviewDialog([[self.recipe]], self, title=f"{self.recipe.name} — JSON").open()
+        recipes = self.split_recipes()
+        title = f"{self.recipe.name} — JSON" + (f" ({len(recipes)} recipes after splitting)" if len(recipes) > 1 else "")
+        RecipePreviewDialog([[r] for r in recipes], self, title=title).open()
 
     def reset_to_template(self):
         if self._template_origin is None:
@@ -875,12 +976,15 @@ class BuilderWindow(ThemedWindow):
         if not self.recipe.outputdir:
             QtWidgets.QMessageBox.warning(self, "Output directory", "Set an output directory first.")
             return
-        req = QueueRequest(chains=[[self.recipe.copy()]], outputdir=self.recipe.outputdir, source="builder")
+        recipes = self.split_recipes()
+        req = QueueRequest(chains=[[r] for r in recipes], outputdir=self.recipe.outputdir, source="builder")
         handled = bool(self.queue_handler(req)) if self.queue_handler else False
         self.recipes_queued.emit(req)
         if not handled and self.queue_handler is None:
             written = dump_recipes(req, backend=self.backend)
-            self.statusBar().showMessage(f"No Status Console attached; wrote {written[0]}", 8000)
+            self.statusBar().showMessage(f"No Status Console attached; wrote {len(written)} recipe file{'s' if len(written) != 1 else ''} to {os.path.dirname(written[0])}", 8000)
+        elif len(recipes) > 1:
+            self.statusBar().showMessage(f"Queued {len(recipes)} recipes ({self.split.describe()})", 8000)
         self._dirty = False
         self._refresh_status()
 
@@ -902,6 +1006,7 @@ class BuilderWindow(ThemedWindow):
             cb.blockSignals(False)
         n = len(r.inputs)
         self.inputs_label.setFullText(f"{n} file{'s' if n != 1 else ''}" + (f": {os.path.basename(r.inputs[0])} … {os.path.basename(r.inputs[-1])}" if n else ""))
+        self._refresh_split_label()
         origin = self._template_origin_name or (os.path.basename(r.source_path) if r.source_path else "none")
         self.origin_label.setFullText(origin)
         lvl = self.start_level()
@@ -948,5 +1053,7 @@ class BuilderWindow(ThemedWindow):
 
     def closeEvent(self, event):
         self.settings.setValue("builder/last_dir", self._last_dir)
+        self.settings.setValue("builder/split_max_files", self.split.max_files)
+        self.settings.setValue("builder/split_keywords", self.split.keywords_text)
         self.settings.setValue("builder/geometry", self.saveGeometry())
         super().closeEvent(event)

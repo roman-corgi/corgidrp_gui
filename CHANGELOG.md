@@ -7,6 +7,8 @@
 - Status Console: unticking "Show only the selected job" restores the combined log.
 - Recipe Builder: double-click an argument's description to read it in full.
 - Recipe Builder: Start from template… button and dialog (searchable, with a step preview).
+- Parser and Builder: split inputs into several recipes by a maximum number of files per
+  recipe and/or by header keywords (VISITID, DPAMNAME, ...); all parts queue together.
 
 ## 0.1.0 — 2026-10-20
 

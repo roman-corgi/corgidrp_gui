@@ -73,6 +73,15 @@ Closing the Launcher closes the application.
    starts running them. Groups that failed to resolve are skipped after a confirmation.
    The **CPGS XML** field is optional and only matters for recipes containing
    `find_spec_star`.
+8. **Splitting** (the row under the output directory) breaks large groups into several
+   recipes that are queued together. *Max files per recipe* cuts a group into parts of at
+   most that many files (`part 1/3`, `2/3`, ...) to bound the memory one recipe needs.
+   *Split by keywords* takes comma-separated header keywords (`VISITID, DPAMNAME`, ...);
+   every distinct combination of values becomes its own recipe, cut further by the file
+   limit. Each batch is a row in the group table with its own recommendation, override and
+   status, and its recipes are named after the batch (`l1_to_l2b_VISITID-123_part2of3`).
+   Changing either control re-parses. Splitting is a memory and bookkeeping tool: keep files
+   that a template must see together (polarimetry pairs, dark sequences) in one batch.
 
 The output directory and last folder are remembered between sessions. *File → Save all recipes
 to folder* writes the populated JSON files without running them.
@@ -122,6 +131,14 @@ docstring on request.
   them. Output directory, `drpconfig` (JSON) and the `ram_heavy` / `process_in_chunks` flags
   live here too. The *Level* chip shows the data level of the inputs, read from the first
   file's DATALVL or guessed from the recipe name.
+
+**Splitting inputs.** The *Split into* row limits how many input files one recipe takes
+(*max files*) and/or separates inputs by header keywords (*by*: `VISITID, DPAMNAME`, ...).
+The hint below it says how many recipes the current inputs would become and how many files
+each gets. With a split active, *View JSON* shows one tab per part, *Save recipe…* writes
+one file per part next to the chosen name, and *Save & queue* queues them all; each copy
+carries the same steps and settings and a name such as `my_recipe_VISITID-123_part1of2`.
+Headers are read when splitting by keyword, so the first use on a long list takes a moment.
 
 **Saving and running.** *Save recipe…* writes a runnable recipe. *Save as user template…*
 clears inputs and output directory, sets `template: true` and writes into corgidrp's user

@@ -243,3 +243,38 @@ def test_start_from_template_dialog(builder, catalog, app, monkeypatch):
     assert w.recipe.name == "l1_to_l2b" and w.recipe.steps
     assert "l1_to_l2b.json" in w.origin_label.text()
     assert "Empty recipe" not in w.issues_label.text()
+
+
+def test_builder_split_inputs(builder, mock_l1_files, tmp_path, monkeypatch):
+    from qtpy import QtWidgets
+    from corgidrp_gui.core.queue_items import QueueRequest
+    w = builder
+    w.load_template("l1_to_l2b.json")
+    w.add_inputs(mock_l1_files)
+    w.recipe.outputdir = str(tmp_path / "out")
+    assert len(w.split_recipes()) == 1 and w.split_label.fullText() == ""
+    w.set_split(max_files=1)
+    rs = w.split_recipes()
+    assert [r.name for r in rs] == ["l1_to_l2b_part1of2", "l1_to_l2b_part2of2"]
+    assert [r.inputs for r in rs] == [[mock_l1_files[0]], [mock_l1_files[1]]]
+    assert rs[0].steps and rs[0].to_dict()["steps"] == w.recipe.to_dict()["steps"]
+    assert "2 recipes" in w.split_label.fullText()
+    # keyword split reads headers through the backend (both mock frames share VISITID)
+    w.set_split(max_files=0, keywords="visitid")
+    assert w.split_keys_edit.text() == "VISITID" and len(w.split_recipes()) == 1
+    assert "one recipe" in w.split_label.fullText()
+    w.set_split(max_files=1, keywords="VISITID")
+    rs = w.split_recipes()
+    assert len(rs) == 2 and rs[0].name.startswith("l1_to_l2b_VISITID-") and rs[0].name.endswith("_part1of2")
+    # queueing sends one chain per batch; saving writes one file per batch
+    got = []
+    w.queue_handler = lambda r: got.append(r) or True
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    w.queue_recipe()
+    assert len(got) == 1 and isinstance(got[0], QueueRequest) and got[0].n_recipes == 2
+    assert [c[0].inputs for c in got[0].chains] == [[mock_l1_files[0]], [mock_l1_files[1]]]
+    written = w.save_recipe(str(tmp_path / "my_recipe.json"))
+    assert len(written) == 2 and all(os.path.exists(p) for p in written)
+    assert os.path.basename(written[0]).startswith("my_recipe_VISITID-") and written[1].endswith("_part2of2.json")
+    w.set_split()
+    assert len(w.split_recipes()) == 1
