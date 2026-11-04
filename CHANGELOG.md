@@ -11,6 +11,8 @@
   recipe and/or by header keywords (VISITID, DPAMNAME, ...); all parts queue together.
 - Add folder… (Parser and Builder inputs) accepts several folders at once, with an
   include-subfolders switch and a filename pattern.
+- docs/remote_xpra.md rewritten from a real setup: focal repository recipe, Xpra-Light
+  client, start-child by absolute path (no wrapper script), troubleshooting section.
 
 ## 0.1.0 — 2026-10-20
 
