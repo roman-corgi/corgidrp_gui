@@ -462,11 +462,13 @@ class ParserWindow(ThemedWindow):
         self.file_model.set_group_keys(analyses)
         for i, a in enumerate(analyses):
             self.log_line(f"group {i + 1} ({a.group.label}, {len(a.group.files)} files): {a.recipe_summary or '—'} · {a.message}")
-        n_ok = sum(1 for a in analyses if a.chains)
+        n_ok = sum(1 for a in analyses if a.complete)
+        n_inc = sum(1 for a in analyses if a.incomplete)
         self._set_busy(False)
         n_batches = sum(1 for a in analyses if a.group.batch is not None)
         what = f"{len(analyses)} groups" if not n_batches else f"{len(analyses)} batches"
-        self.statusBar().showMessage(f"{self.file_model.rowCount()} files · {what} · {n_ok} with recipes ready")
+        inc = f" · {n_inc} incomplete (missing calibrations)" if n_inc else ""
+        self.statusBar().showMessage(f"{self.file_model.rowCount()} files · {what} · {n_ok} with recipes ready{inc}")
         if analyses and not self.group_view.selectionModel().hasSelection():
             self.group_view.selectRow(0)
         self._update_buttons()
@@ -497,6 +499,11 @@ class ParserWindow(ThemedWindow):
                 lines.extend(a.recommendation.facts.lines())
             if a.message and a.status != "ok":
                 lines += ["", a.message]
+            if a.incomplete:
+                lines.append("The recipe was still made. These calibrations are left as AUTOMATIC:")
+                lines += [f"  • {lab} for {st} ({rn})" for rn, st, lab in a.missing_calibs]
+                lines.append("Open it in the Recipe Builder to choose the files, or queue it after the "
+                             "recipe that makes them: it looks them up again when the step runs.")
             self.why.setPlainText("\n".join(lines))
             self._sync_override_combo(a)
             # highlight the group's files
@@ -588,6 +595,10 @@ class ParserWindow(ThemedWindow):
         if not sel:
             return
         recipe = sel[0].chains[0][0]
+        if recipe.unresolved:
+            names = ", ".join(lab for _st, lab in recipe.unresolved)
+            self.statusBar().showMessage(f"Opened an incomplete recipe: choose files for {names} "
+                                         "in the Builder's Calibrations panel", 12000)
         if self.builder_handler is not None:
             self.builder_handler(recipe)
         self.open_in_builder.emit(recipe)
@@ -601,8 +612,15 @@ class ParserWindow(ThemedWindow):
         self._queue(list(self.group_model.rows))
 
     def _queue(self, analyses: list[GroupAnalysis]):
-        ready = [a for a in analyses if a.chains]
+        ready = [a for a in analyses if a.complete]
+        incomplete = [a for a in analyses if a.incomplete]
         not_ready = [a for a in analyses if not a.chains]
+        if incomplete:
+            extra = self._ask_incomplete(incomplete)
+            if extra is None:
+                return
+            take = {id(a) for a in ready + extra}
+            ready = [a for a in analyses if id(a) in take]   # keep the table's order (calibrations first)
         if not ready:
             QtWidgets.QMessageBox.information(self, "Nothing to queue", "None of the selected groups has a runnable recipe.")
             return
@@ -624,6 +642,32 @@ class ParserWindow(ThemedWindow):
         self.recipes_queued.emit(req)
         if not handled and self.queue_handler is None:
             self._default_queue(req)
+
+    def _ask_incomplete(self, incomplete: list[GroupAnalysis]) -> list[GroupAnalysis] | None:
+        """Ask whether to queue recipes with missing calibrations. Returns the groups to add
+        (all or none), or None to cancel."""
+        names = "\n".join(f"• {a.group.label}: " + ", ".join(sorted({lab for _r, _s, lab in a.missing_calibs}))
+                          for a in incomplete)
+        n = len(incomplete)
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        box.setWindowTitle("Incomplete recipes")
+        box.setText(f"{n} group{'s' if n != 1 else ''} {'have' if n != 1 else 'has'} recipes with calibrations "
+                    "the CalDB does not have yet:")
+        box.setInformativeText(names + "\n\nThose recipes look the calibrations up again when each step runs, "
+                               "so they succeed only if a job earlier in the queue makes them. "
+                               "Otherwise open them in the Recipe Builder and choose the files.")
+        queue_btn = box.addButton("Queue them too", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        skip_btn = box.addButton("Skip them", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(skip_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is queue_btn:
+            return list(incomplete)
+        if clicked is skip_btn:
+            return []
+        return None
 
     def _default_queue(self, req: QueueRequest, folder: str | None = None):
         """No console attached yet: write the recipes as JSON into <outputdir>/recipes/."""

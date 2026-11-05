@@ -11,6 +11,9 @@
   recipe and/or by header keywords (VISITID, DPAMNAME, ...); all parts queue together.
 - Add folder… (Parser and Builder inputs) accepts several folders at once, with an
   include-subfolders switch and a filename pattern.
+- Parser: a missing required calibration no longer means no recipe. The group is marked
+  *incomplete*, the recipe is made with that calibration left AUTOMATIC (and jit_calib_id on),
+  the Builder flags each gap, and queueing asks before including it.
 - docs/remote_xpra.md rewritten from a real setup: focal repository recipe, Xpra-Light
   client, start-child by absolute path (no wrapper script), troubleshooting section.
 

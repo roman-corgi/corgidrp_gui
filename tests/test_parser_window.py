@@ -202,3 +202,90 @@ def test_folder_picker_dialog_allows_multiple_selection(app, tmp_path):
     d.close()
     d.deleteLater()
     app.processEvents()
+
+
+@pytest.fixture
+def empty_caldb(tmp_path, monkeypatch):
+    """Point corgidrp at a fresh, empty CalDB so every AUTOMATIC calibration is missing."""
+    import corgidrp
+    path = str(tmp_path / "empty_caldb.csv")
+    monkeypatch.setattr(corgidrp, "caldb_filepath", path)
+    return path
+
+
+def test_core_incomplete_recipe_when_calibration_missing(mock_l1_files, tmp_path, empty_caldb, catalog):
+    from corgidrp_gui.core.parser import analyze, scan_files
+    from corgidrp_gui.core.recipes import validate_recipe
+    res = analyze(scan_files(mock_l1_files), str(tmp_path / "out"))
+    a = res[0]
+    assert a.status == "incomplete" and a.incomplete and not a.complete, a.message
+    assert a.message.startswith("incomplete: no ") and "in the CalDB for" in a.message
+    r = a.chains[0][0]
+    assert r.name.startswith("l1_to_l2a_basic") and r.inputs == mock_l1_files and r.outputdir == str(tmp_path / "out")
+    assert r.unresolved and all(lab for _st, lab in r.unresolved)
+    assert r.drpconfig.get("jit_calib_id") is True          # the walker retries the lookup at run time
+    steps = {s.name: s for s in r.steps}
+    for st, lab in r.unresolved:
+        assert steps[st].calibs[lab].upper().startswith("AUTOMATIC")
+    assert "missing calibration" in a.log
+    # the Builder's validation names each gap; the JSON carries no GUI-only keys
+    msgs = [i.message for i in validate_recipe(r, catalog)]
+    assert sum("in the CalDB matched these files" in m for m in msgs) == len(r.unresolved)
+    assert "unresolved" not in r.to_dict() and r.copy().unresolved == r.unresolved
+
+
+def test_incomplete_builder_restores_settings_without_required_gaps(mock_l1_files, tmp_path, empty_caldb):
+    from corgidrp_gui.core.parser import build_incomplete_recipes
+    tpl = {"name": "opt_only", "template": True, "drpconfig": {"track_individual_errors": False}, "inputs": [],
+           "outputdir": "", "steps": [{"name": "prescan_biassub", "calibs": {"DetectorNoiseMaps": "AUTOMATIC, OPTIONAL"}},
+                                      {"name": "save"}]}
+    chains, _log = build_incomplete_recipes(mock_l1_files, str(tmp_path), [[tpl]], False)
+    r = chains[0][0]
+    assert r.unresolved == [] and r.steps[0].calibs == {"DetectorNoiseMaps": None}
+    assert r.drpconfig == {"track_individual_errors": False}
+    assert tpl["steps"][0]["calibs"]["DetectorNoiseMaps"] == "AUTOMATIC, OPTIONAL"   # caller's dict untouched
+
+
+def test_parser_window_incomplete_group(app, mock_l1_files, tiny_template, tmp_path, empty_caldb):
+    from corgidrp_gui.ui.parser_window import ParserWindow
+    from corgidrp_gui.core.parser import GroupAnalysis
+    win = ParserWindow()
+    win.show()
+    win.outputdir_edit.setText(str(tmp_path / "reduced"))
+    win.add_files(mock_l1_files)
+    assert win.jobs.wait_idle(120000)
+    a = win.group_model.rows[0]
+    assert a.status == "incomplete"
+    assert "incomplete" in win.statusBar().currentMessage()
+    win.group_view.selectRow(0)
+    assert "left as AUTOMATIC" in win.why.toPlainText()
+    assert win.builder_btn.isEnabled() and win.preview_btn.isEnabled() and win.queue_all_btn.isEnabled()
+    opened = []
+    win.builder_handler = opened.append
+    win.open_selected_in_builder()
+    assert opened and opened[0].unresolved and "incomplete" in win.statusBar().currentMessage()
+
+    # queueing asks: skip -> nothing to queue; queue -> in table order; cancel -> nothing
+    queued = []
+    win.queue_handler = lambda req: queued.append(req) or True
+    for answer, expect in (([], 0), (None, 0), ("all", 1)):
+        win._ask_incomplete = lambda inc, ans=answer: list(inc) if ans == "all" else ans
+        from qtpy import QtWidgets
+        orig = QtWidgets.QMessageBox.information
+        QtWidgets.QMessageBox.information = staticmethod(lambda *a, **k: None)
+        try:
+            queued.clear()
+            win.queue_all()
+        finally:
+            QtWidgets.QMessageBox.information = orig
+        assert len(queued) == expect
+    assert queued[0].chains[0][0].unresolved
+    # a complete group alongside keeps the table order
+    ok = GroupAnalysis(a.group, chains=[[a.chains[0][0].copy()]], status="ok")
+    ok.chains[0][0].unresolved = []
+    ok.chains[0][0].name = "complete_one"
+    win.group_model.set_rows([a, ok])
+    queued.clear()
+    win.queue_all()
+    assert [c[0].name for c in queued[0].chains] == [a.chains[0][0].name, "complete_one"]
+    win.close()

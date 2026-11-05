@@ -18,7 +18,7 @@ ObjectRole = Qt.ItemDataRole.UserRole + 3
 def _status_color(status: str) -> QtGui.QColor | None:
     p = theming.current_theme().palette
     return {"ok": QtGui.QColor(p.ok), "warn": QtGui.QColor(p.warn), "err": QtGui.QColor(p.err),
-            "working": QtGui.QColor(p.secondary)}.get(status)
+            "incomplete": QtGui.QColor(p.err), "working": QtGui.QColor(p.secondary)}.get(status)
 
 
 class FileTableModel(QtCore.QAbstractTableModel):
@@ -161,10 +161,13 @@ class GroupTableModel(QtCore.QAbstractTableModel):
             lines = [ga.recommendation.reason] if ga.recommendation and ga.recommendation.reason else []
             if ga.message:
                 lines.append(ga.message)
+            if ga.incomplete:
+                lines += [f"  • {lab} for {st} ({rn})" for rn, st, lab in ga.missing_calibs]
+                lines.append("Open it in the Recipe Builder to choose the files.")
             return "\n".join(lines) or None
         if role == Qt.ItemDataRole.ForegroundRole and col == 4:
             return _status_color(ga.status)
-        if role == Qt.ItemDataRole.FontRole and col == 4 and ga.status in ("err", "warn"):
+        if role == Qt.ItemDataRole.FontRole and col == 4 and ga.status in ("err", "warn", "incomplete"):
             f = QtGui.QFont()
             f.setBold(True)
             return f

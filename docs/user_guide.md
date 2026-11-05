@@ -62,8 +62,18 @@ Closing the Launcher closes the application.
    templates applies, then `autogen_recipe` populates the recipes (inputs, output directory,
    calibration files from the CalDB).
 3. The **Status** column tells you whether that worked: *calibrations resolved*, *n optional
-   calibrations missing*, *n steps will be skipped* (when `skip_missing_cal_steps` is on), or
-   the exact error, including which step and calibration type failed and which file was involved.
+   calibrations missing*, *n steps will be skipped* (when `skip_missing_cal_steps` is on),
+   *incomplete* (below), or the exact error, including which step and calibration type failed
+   and which file was involved.
+
+   **Incomplete recipes.** When the CalDB has no match for a required calibration, corgidrp
+   stops without a recipe. The parser then makes the recipe anyway: every calibration it can
+   find gets its file, and the missing ones stay `AUTOMATIC`. The status reads *incomplete: no
+   DetectorParams in the CalDB for detect_cosmic_rays*, and Why this recipe lists every gap.
+   Open it in the Recipe Builder, where each gap is flagged on its step, and choose the files
+   in the Calibrations panel. Such a recipe also carries `"jit_calib_id": true` in its
+   drpconfig, so the walker looks the calibrations up again when each step runs. That lets you
+   queue it behind the calibration recipe that produces the missing file; the queue asks first.
 4. **Why this recipe** explains the branch `guess_template` took, in words, followed by the
    facts it used (unique exposure settings, whether FSM positions differ, ND filter, prism,
    polarizer).
@@ -73,7 +83,8 @@ Closing the Launcher closes the application.
    and any traceback; **Open in Recipe Builder** hands the first recipe of the group to the
    Builder with its files attached.
 7. **Queue selected** / **Queue all** send the populated recipes to the Status Console, which
-   starts running them. Groups that failed to resolve are skipped after a confirmation.
+   starts running them, in table order. Groups that failed to resolve are skipped after a
+   confirmation. Incomplete groups prompt *Queue them too*, *Skip them* or *Cancel*.
    The **CPGS XML** field is optional and only matters for recipes containing
    `find_spec_star`.
 8. **Splitting** (the row under the output directory) breaks large groups into several
@@ -213,7 +224,7 @@ next start. See `docs/developing.md` for the sections and what each axis control
 
 ## Troubleshooting
 
-- **A group says a calibration cannot be resolved.** Open the Calibration DB, pick one of the
+- **A group says a calibration cannot be resolved, or is incomplete.** Open the Calibration DB, pick one of the
   group's files as the frame, and run *Which file would be used?* for that type. The note column
   carries corgidrp's exact reason (no entry of that type, filter mismatch, a file that fails to
   load ...). Entries with missing files are red; remove them or rescan the folder.

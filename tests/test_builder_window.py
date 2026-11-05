@@ -278,3 +278,18 @@ def test_builder_split_inputs(builder, mock_l1_files, tmp_path, monkeypatch):
     assert os.path.basename(written[0]).startswith("my_recipe_VISITID-") and written[1].endswith("_part2of2.json")
     w.set_split()
     assert len(w.split_recipes()) == 1
+
+
+def test_builder_shows_unresolved_calibrations(builder, catalog):
+    import corgidrp.walker as walker
+    from corgidrp_gui.core.recipes import Recipe
+    tpl, _path, _user = walker._load_recipe_template("l1_to_l2a_basic.json")
+    r = Recipe.from_dict(tpl)
+    r.template = False
+    r.unresolved = [("correct_nonlinearity", "NonLinearityCalibration")]
+    builder._dirty = False
+    builder.load_recipe(r)
+    assert builder.recipe.unresolved == r.unresolved
+    msgs = [i.message for i in builder.current_issues()]
+    assert any("no NonLinearityCalibration in the CalDB" in m for m in msgs)
+    assert "NonLinearityCalibration" in builder.issues_label.text()

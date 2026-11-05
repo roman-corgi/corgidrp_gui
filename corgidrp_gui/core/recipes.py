@@ -83,6 +83,9 @@ class Recipe:
     steps: list[RecipeStep] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
     source_path: str | None = None          # where it was loaded from, if anywhere
+    #: (step name, calib label) pairs that no CalDB entry matched when the Parser made this
+    #: recipe; they are still "AUTOMATIC" in the recipe. Not written to JSON.
+    unresolved: list[tuple[str, str]] = field(default_factory=list)
 
     # -- (de)serialisation -------------------------------------------------
     @classmethod
@@ -130,6 +133,7 @@ class Recipe:
 
     def copy(self) -> "Recipe":
         r = Recipe.from_dict(copy.deepcopy(self.to_dict()), self.source_path)
+        r.unresolved = list(self.unresolved)
         return r
 
     # -- editing helpers ----------------------------------------------------
@@ -218,6 +222,11 @@ def validate_recipe(recipe: Recipe, catalog: StepCatalog, start_level: str | Non
                 issues.append(Issue("warning", f"calibration '{label}' is empty (None); the step will get no {label}", i))
             elif isinstance(spec, str) and "AUTOMATIC" not in spec.upper() and not os.path.exists(spec):
                 issues.append(Issue("warning", f"calibration file for {label} does not exist: {spec}", i))
+            elif (isinstance(spec, str) and "AUTOMATIC" in spec.upper() and "OPTIONAL" not in spec.upper()
+                  and (step.name, label) in recipe.unresolved):
+                how = ("it is looked up again when the step runs, so it works only if an earlier job makes one"
+                       if recipe.drpconfig.get("jit_calib_id") else "choose a file")
+                issues.append(Issue("warning", f"no {label} in the CalDB matched these files; {how}", i))
         if info.calibs and not calibs and step.name != SAVE_STEP_NAME:
             needed = [c for c in info.calibs if not c.optional_in_templates]
             if needed:

@@ -8,7 +8,9 @@ in terms of the header keywords the walker actually looks at.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
+import json
 import os
 import re
 import traceback
@@ -21,7 +23,8 @@ from .splitting import Batch, SplitSpec, batch_recipe_name, split_records
 
 __all__ = [
     "DISPLAY_KEYS", "GROUP_KEYS", "FileRecord", "Facts", "Recommendation", "FileGroup",
-    "files_in_folders", "scan_files", "group_files", "split_group", "recommend", "build_recipes", "normalize_chains",
+    "files_in_folders", "scan_files", "group_files", "split_group", "recommend", "build_recipes",
+    "build_incomplete_recipes", "normalize_chains",
     "GroupAnalysis", "analyze_group", "analyze",
 ]
 
@@ -362,6 +365,84 @@ def build_recipes(paths: list[str], outputdir: str, template=None) -> tuple[list
     return [[Recipe.from_dict(r) for r in chain] for chain in chains], log.getvalue()
 
 
+def _load_template(template) -> tuple[dict, str | None]:
+    """A private copy of a template given by name, path or dict, plus where it came from.
+    Template names are looked up the way the walker does (user_templates first)."""
+    if isinstance(template, dict):
+        return copy.deepcopy(template), None
+    if os.path.sep not in template:
+        import corgidrp
+        import corgidrp.walker as walker
+        tpl, path, is_user = walker._load_recipe_template(template)
+        if is_user and corgidrp.enforce_template_structure:
+            walker._validate_template_structure(tpl, os.path.join(walker.recipe_dir, template), template)
+        return copy.deepcopy(tpl), path
+    with open(template) as f:
+        return json.load(f), template
+
+
+def build_incomplete_recipes(paths: list[str], outputdir: str, chains: list[list], chained: bool
+                             ) -> tuple[list[list[Recipe]], str]:
+    """Recipes for ``paths`` even when the CalDB lacks a calibration they need.
+
+    Used after :func:`build_recipes` failed on a missing calibration. Each template gets the
+    recipe-level ``jit_calib_id`` flag (a documented corgidrp recipe setting), so
+    ``autogen_recipe`` fills inputs and output directory without looking calibrations up.
+    Calibrations are then looked up here, one by one, exactly as the walker would:
+    found ones get their file path, missing ones stay "AUTOMATIC" and are listed in
+    :attr:`Recipe.unresolved`. A recipe with a missing required calibration keeps
+    ``jit_calib_id`` on, so the walker looks it up again when the step runs; a recipe
+    without one gets its original setting back (optional misses become None, as usual).
+
+    ``chains`` holds template names, paths or dicts, one list per chain.
+    """
+    import corgidrp.caldb as caldb
+    import corgidrp.data as cdata
+    import corgidrp.walker as walker
+    log = io.StringIO()
+    out: list[list[Recipe]] = []
+    with contextlib.redirect_stdout(log):
+        ref = cdata.Dataset([paths[0]])[0] if paths else None
+        db = caldb.CalDB()
+        for chain in chains:
+            built = []
+            for i, template in enumerate(chain):
+                tpl, src = _load_template(template)
+                cfg = tpl.get("drpconfig")
+                if not isinstance(cfg, dict):
+                    cfg = tpl["drpconfig"] = {}
+                had_jit, old_jit = "jit_calib_id" in cfg, cfg.get("jit_calib_id")
+                cfg["jit_calib_id"] = True
+                r = walker.autogen_recipe(list(paths), outputdir, template=tpl)
+                if src and "RECIPE_SRC" not in r:
+                    r["RECIPE_SRC"] = src
+                if i > 0 and chained:
+                    r["inputs"] = []        # filled from the previous recipe's outputs at run time
+                lost: list[tuple[dict, str, bool]] = []
+                for step in r.get("steps", []):
+                    calibs = step.get("calibs") or {}
+                    for label, spec in list(calibs.items()):
+                        if not (isinstance(spec, str) and "AUTOMATIC" in spec.upper()):
+                            continue
+                        try:
+                            calibs[label] = db.get_calib(ref, cdata.datatypes[label]).filepath
+                        except (ValueError, KeyError):
+                            lost.append((step, label, "OPTIONAL" in spec.upper()))
+                required = [(st, lab) for st, lab, optional in lost if not optional]
+                if not required:
+                    for st, lab, _opt in lost:
+                        st["calibs"][lab] = None
+                    if had_jit:
+                        r["drpconfig"]["jit_calib_id"] = old_jit
+                    else:
+                        r["drpconfig"].pop("jit_calib_id", None)
+                rec = Recipe.from_dict(r)
+                rec.unresolved = [(st["name"], lab) for st, lab in required]
+                built.append(rec)
+            out.append(built)
+    return out, log.getvalue()
+
+
 # --------------------------------------------------------------------------- #
 # full analysis of a set of files (what the Parser window runs in a thread)
 # --------------------------------------------------------------------------- #
@@ -370,7 +451,7 @@ class GroupAnalysis:
     group: FileGroup
     recommendation: Recommendation | None = None
     chains: list[list[Recipe]] | None = None   # populated recipes, if they could be built
-    status: str = "pending"                    # pending | working | ok | warn | err
+    status: str = "pending"                    # pending | working | ok | warn | incomplete | err
     message: str = ""
     override: str | None = None                # template name or path chosen by the user
     log: str = ""
@@ -385,6 +466,20 @@ class GroupAnalysis:
 
     def flat_recipes(self) -> list[Recipe]:
         return [r for chain in (self.chains or []) for r in chain]
+
+    @property
+    def missing_calibs(self) -> list[tuple[str, str, str]]:
+        """(recipe, step, calib label) for required calibrations the CalDB could not supply."""
+        return [(r.name, st, lab) for r in self.flat_recipes() for st, lab in r.unresolved]
+
+    @property
+    def incomplete(self) -> bool:
+        return bool(self.missing_calibs)
+
+    @property
+    def complete(self) -> bool:
+        """Has recipes and every required calibration resolved."""
+        return bool(self.chains) and not self.incomplete
 
 
 def _calib_report(chains: list[list[Recipe]]) -> tuple[int, int]:
@@ -402,28 +497,44 @@ def _calib_report(chains: list[list[Recipe]]) -> tuple[int, int]:
     return optional_missing, skipped
 
 
-def describe_exception(exc: BaseException) -> str:
-    """One line for the group table: the exception plus, when it happened while the walker
-    was resolving a calibration, which step, calibration type and file were involved."""
-    head = f"{type(exc).__name__}: {exc}".strip().splitlines()[0][:300]
+def _calib_context(exc: BaseException) -> tuple[str | None, str | None, str | None] | None:
+    """(step, calib label, file) when ``exc`` was raised while the walker resolved a
+    calibration (``_fill_in_calib_files``), else None."""
     step = calib = path = None
+    inside = False
     for frame, _lineno in traceback.walk_tb(exc.__traceback__):
         fn = frame.f_code.co_name
         loc = frame.f_locals
         if fn == "_fill_in_calib_files":
+            inside = True
             st = loc.get("step")
             step = st.get("name") if isinstance(st, dict) else None
             calib = loc.get("calib")
         elif fn == "get_calib" and "calib_filepath" in loc:
             path = loc.get("calib_filepath")
-    if calib or step:
-        ctx = f"while resolving {calib or 'a calibration'}"
+    return (step, calib, path) if inside else None
+
+
+def describe_exception(exc: BaseException) -> str:
+    """One line for the group table: the exception plus, when it happened while the walker
+    was resolving a calibration, which step, calibration type and file were involved."""
+    head = f"{type(exc).__name__}: {exc}".strip().splitlines()[0][:300]
+    ctx = _calib_context(exc)
+    if ctx and (ctx[0] or ctx[1]):
+        step, calib, path = ctx
+        text = f"while resolving {calib or 'a calibration'}"
         if step:
-            ctx += f" for {step}"
+            text += f" for {step}"
         if path:
-            ctx += f" ({path})"
-        return f"{head} {ctx}"
+            text += f" ({path})"
+        return f"{head} {text}"
     return head
+
+
+def _missing_message(missing: list[tuple[str, str, str]]) -> str:
+    _recipe, step, label = missing[0]
+    more = f" (+{len(missing) - 1} more)" if len(missing) > 1 else ""
+    return f"incomplete: no {label} in the CalDB for {step}{more}"
 
 
 def analyze_group(group: FileGroup, outputdir: str, override: str | None = None) -> GroupAnalysis:
@@ -444,14 +555,31 @@ def analyze_group(group: FileGroup, outputdir: str, override: str | None = None)
     try:
         ga.chains, ga.log = build_recipes(group.paths, outputdir, template=override)
     except Exception as exc:  # noqa: BLE001 - corgidrp raises ValueError for missing calibs, among others
-        ga.status = "err"
-        ga.message = describe_exception(exc)
-        ga.log = traceback.format_exc()
-        return ga
+        first_tb = traceback.format_exc()
+        if _calib_context(exc) is None:
+            ga.status, ga.message, ga.log = "err", describe_exception(exc), first_tb
+            return ga
+        # a calibration is missing: still make the recipe, with the gap left as AUTOMATIC
+        if override:
+            specs, chained = [[override]], False
+        else:
+            specs, chained = ga.recommendation.chains, ga.recommendation.chained
+        try:
+            ga.chains, log2 = build_incomplete_recipes(group.paths, outputdir, specs, chained)
+        except Exception:  # noqa: BLE001
+            ga.status, ga.message = "err", describe_exception(exc)
+            ga.log = first_tb + "\nbuilding an incomplete recipe failed too:\n" + traceback.format_exc()
+            ga.chains = None
+            return ga
+        ga.log = (f"autogen_recipe stopped on a missing calibration:\n{first_tb}\n"
+                  f"rebuilt with the missing calibrations left as AUTOMATIC:\n{log2}")
     if group.batch is not None and group.batch.slug:
         for chain in ga.chains:
             for r in chain:
                 r.name = batch_recipe_name(r.name, group.batch)
+    if ga.incomplete:
+        ga.status, ga.message = "incomplete", _missing_message(ga.missing_calibs)
+        return ga
     missing, skipped = _calib_report(ga.chains)
     if skipped:
         ga.status, ga.message = "warn", f"{skipped} step{'s' if skipped != 1 else ''} will be skipped (missing calibration)"
