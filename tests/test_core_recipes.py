@@ -54,3 +54,46 @@ def test_editing_and_templating():
     s = r.steps[0]
     s.set_keyword("k", 1); s.unset_keyword("k")
     assert s.keywords is None
+
+
+def _calib_recipe(inputs, nonlin="AUTOMATIC", ct="AUTOMATIC", optional="AUTOMATIC, OPTIONAL", drpconfig=None):
+    return Recipe(name="calibs", inputs=list(inputs), outputdir="", drpconfig=dict(drpconfig or {}), steps=[
+        RecipeStep("correct_nonlinearity", calibs={"NonLinearityCalibration": nonlin}),
+        RecipeStep("prescan_biassub", calibs={"DetectorNoiseMaps": optional}),
+        RecipeStep("do_psf_subtraction", calibs={"CoreThroughputCalibration": ct}),
+        RecipeStep("save")])
+
+
+def test_resolve_calibrations_fills_found_and_reports_missing(mock_l1_files, nonlin_caldb):
+    from corgidrp_gui.core.recipes import resolve_calibrations
+    _db, nln = nonlin_caldb
+    r = _calib_recipe(mock_l1_files)
+    missing = resolve_calibrations(r)
+    assert missing == [("do_psf_subtraction", "CoreThroughputCalibration")] == r.unresolved
+    assert r.steps[0].calibs["NonLinearityCalibration"] == nln
+    assert r.steps[2].calibs["CoreThroughputCalibration"] == "AUTOMATIC"
+    # a required gap keeps optional ones for the run-time lookup
+    assert r.steps[1].calibs["DetectorNoiseMaps"] == "AUTOMATIC, OPTIONAL"
+    # without a required gap, a missing optional calibration becomes None
+    r = _calib_recipe(mock_l1_files, ct="/some/ct_cal.fits")
+    assert resolve_calibrations(r) == [] and r.unresolved == []
+    assert r.steps[1].calibs["DetectorNoiseMaps"] is None
+    assert r.steps[2].calibs["CoreThroughputCalibration"] == "/some/ct_cal.fits"   # explicit files are left alone
+
+
+def test_resolve_calibrations_respects_jit_and_skip_settings(mock_l1_files, nonlin_caldb, monkeypatch):
+    import corgidrp
+    from corgidrp_gui.core.recipes import jit_calib_id_on, resolve_calibrations
+    _db, nln = nonlin_caldb
+    r = _calib_recipe(mock_l1_files, drpconfig={"jit_calib_id": True})
+    assert jit_calib_id_on(r) and resolve_calibrations(r) == []
+    assert r.steps[0].calibs["NonLinearityCalibration"] == "AUTOMATIC"         # the walker looks it up at run time
+    assert resolve_calibrations(r, force=True) and r.steps[0].calibs["NonLinearityCalibration"] == nln
+    monkeypatch.setattr(corgidrp, "jit_calib_id", True)
+    assert jit_calib_id_on(_calib_recipe([])) and not jit_calib_id_on(_calib_recipe([], drpconfig={"jit_calib_id": False}))
+    monkeypatch.setattr(corgidrp, "jit_calib_id", False)
+    assert resolve_calibrations(_calib_recipe([])) == []                      # no inputs, no reference frame
+    monkeypatch.setattr(corgidrp, "skip_missing_cal_steps", True)
+    r = _calib_recipe(mock_l1_files)
+    assert resolve_calibrations(r) == []
+    assert r.steps[2].skip is True and r.steps[2].calibs["CoreThroughputCalibration"] is None

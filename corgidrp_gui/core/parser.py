@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..backend import Backend, FitsHeaders, default_backend
-from .recipes import Recipe
+from .recipes import Recipe, resolve_calibrations
 from .splitting import Batch, SplitSpec, batch_recipe_name, split_records
 
 __all__ = [
@@ -418,26 +418,14 @@ def build_incomplete_recipes(paths: list[str], outputdir: str, chains: list[list
                     r["RECIPE_SRC"] = src
                 if i > 0 and chained:
                     r["inputs"] = []        # filled from the previous recipe's outputs at run time
-                lost: list[tuple[dict, str, bool]] = []
-                for step in r.get("steps", []):
-                    calibs = step.get("calibs") or {}
-                    for label, spec in list(calibs.items()):
-                        if not (isinstance(spec, str) and "AUTOMATIC" in spec.upper()):
-                            continue
-                        try:
-                            calibs[label] = db.get_calib(ref, cdata.datatypes[label]).filepath
-                        except (ValueError, KeyError):
-                            lost.append((step, label, "OPTIONAL" in spec.upper()))
-                required = [(st, lab) for st, lab, optional in lost if not optional]
-                if not required:
-                    for st, lab, _opt in lost:
-                        st["calibs"][lab] = None
-                    if had_jit:
-                        r["drpconfig"]["jit_calib_id"] = old_jit
-                    else:
-                        r["drpconfig"].pop("jit_calib_id", None)
                 rec = Recipe.from_dict(r)
-                rec.unresolved = [(st["name"], lab) for st, lab in required]
+                # chained recipes have no inputs yet; all are matched against the group's first file
+                required = resolve_calibrations(rec, db, ref, force=True)
+                if not required:
+                    if had_jit:
+                        rec.drpconfig["jit_calib_id"] = old_jit
+                    else:
+                        rec.drpconfig.pop("jit_calib_id", None)
                 built.append(rec)
             out.append(built)
     return out, log.getvalue()

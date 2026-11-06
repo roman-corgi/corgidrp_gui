@@ -14,7 +14,7 @@ from typing import Any
 
 from .steps import MISSING, SAVE_STEP_NAME, StepCatalog, StepInfo
 
-__all__ = ["RecipeStep", "Recipe", "Issue", "validate_recipe"]
+__all__ = ["RecipeStep", "Recipe", "Issue", "validate_recipe", "jit_calib_id_on", "resolve_calibrations"]
 
 _RECIPE_KEYS = ("name", "template", "drpconfig", "inputs", "outputdir", "steps")
 _STEP_KEYS = ("name", "calibs", "keywords", "skip")
@@ -175,6 +175,75 @@ class Issue:
     def __str__(self):
         where = f"step {self.step_index + 1}: " if self.step_index is not None else ""
         return f"{self.severity}: {where}{self.message}"
+
+
+def jit_calib_id_on(recipe: Recipe) -> bool:
+    """Whether the walker looks calibrations up when each step runs: the recipe's own
+    ``drpconfig`` setting if it has one, else corgidrp's ``jit_calib_id`` config value."""
+    if "jit_calib_id" in recipe.drpconfig:
+        return bool(recipe.drpconfig["jit_calib_id"])
+    import corgidrp
+    return bool(getattr(corgidrp, "jit_calib_id", False))
+
+
+def resolve_calibrations(recipe: Recipe, db=None, ref_frame=None, force: bool = False) -> list[tuple[str, str]]:
+    """Fill in the recipe's AUTOMATIC calibrations from the CalDB, in place.
+
+    corgidrp's walker replaces AUTOMATIC only when ``autogen_recipe`` builds a recipe from
+    files, or when a step runs with ``jit_calib_id`` on. A recipe made any other way must
+    have them filled in first, or ``run_recipe`` tries to open a file named "AUTOMATIC".
+
+    Each AUTOMATIC calibration is looked up the way ``autogen_recipe`` does it: with
+    ``CalDB.get_calib`` against the first input frame. A found one gets its file path. A
+    missing required one becomes None with its step marked skip when corgidrp's
+    ``skip_missing_cal_steps`` is on; otherwise it stays AUTOMATIC and is reported.
+    Missing optional ones become None, unless a required one is missing too: then they
+    stay as they are, for a run-time lookup with ``jit_calib_id``.
+
+    Nothing is looked up when there is neither a ``ref_frame`` nor an input file, or when
+    ``jit_calib_id`` is on and ``force`` is False.
+
+    Args:
+        recipe: Recipe to fill in (changed in place).
+        db: An open ``corgidrp.caldb.CalDB``; a new connection when None.
+        ref_frame: The ``corgidrp.data.Image`` to match against; the first input when None.
+        force: Look up even when ``jit_calib_id`` is on.
+
+    Returns:
+        (step name, calibration label) for each required calibration still AUTOMATIC.
+        The same list is stored in :attr:`Recipe.unresolved`.
+    """
+    if (ref_frame is None and not recipe.inputs) or (jit_calib_id_on(recipe) and not force):
+        return []
+    import corgidrp
+    import corgidrp.caldb as caldb
+    import corgidrp.data as cdata
+    if db is None:
+        db = caldb.CalDB()
+    if ref_frame is None:
+        ref_frame = cdata.Dataset([recipe.inputs[0]])[0]
+    skip_missing = bool(getattr(corgidrp, "skip_missing_cal_steps", False))
+    optional_lost: list[tuple[RecipeStep, str]] = []
+    missing: list[tuple[str, str]] = []
+    for step in recipe.steps:
+        for label, spec in list((step.calibs or {}).items()):
+            if not (isinstance(spec, str) and "AUTOMATIC" in spec.upper()):
+                continue
+            try:
+                step.calibs[label] = db.get_calib(ref_frame, cdata.datatypes[label]).filepath
+            except (ValueError, KeyError):
+                if "OPTIONAL" in spec.upper():
+                    optional_lost.append((step, label))
+                elif skip_missing:
+                    step.calibs[label] = None
+                    step.skip = True
+                else:
+                    missing.append((step.name, label))
+    if not missing:
+        for step, label in optional_lost:
+            step.calibs[label] = None
+    recipe.unresolved = missing
+    return missing
 
 
 def validate_recipe(recipe: Recipe, catalog: StepCatalog, start_level: str | None = None,

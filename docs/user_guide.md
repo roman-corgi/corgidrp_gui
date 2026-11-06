@@ -157,7 +157,12 @@ Headers are read when splitting by keyword, so the first use on a long list take
 **Saving and running.** *Save recipe…* writes a runnable recipe. *Save as user template…*
 clears inputs and output directory, sets `template: true` and writes into corgidrp's user
 templates folder, where the plain walker also finds it (a user template with the same filename
-as a shipped one shadows it). *Save & queue* sends the recipe to the Status Console; *View
+as a shipped one shadows it). *Save & queue* sends the recipe to the Status Console. It first looks up every
+`AUTOMATIC` calibration in the CalDB against each recipe's first input, as the walker does for
+recipes it generates; your editor copy keeps `AUTOMATIC`. When a required calibration is
+missing it asks: *Queue anyway* turns `jit_calib_id` on for those recipes so each step looks
+again when it runs, *Queue the other N* (after a split) queues only the complete parts, and
+*Cancel* queues nothing. Recipes with `jit_calib_id` on are queued untouched. *View
 JSON* shows what will be written; *Reset to template* restores the template you started from
 while keeping your inputs.
 

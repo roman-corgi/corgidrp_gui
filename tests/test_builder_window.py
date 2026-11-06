@@ -293,3 +293,51 @@ def test_builder_shows_unresolved_calibrations(builder, catalog):
     msgs = [i.message for i in builder.current_issues()]
     assert any("no NonLinearityCalibration in the CalDB" in m for m in msgs)
     assert "NonLinearityCalibration" in builder.issues_label.text()
+
+
+def test_builder_queue_resolves_automatic_calibrations(builder, mock_l1_files, nonlin_caldb, tmp_path, monkeypatch):
+    from corgidrp_gui.core.recipes import Recipe, RecipeStep
+    _db, nln = nonlin_caldb
+    w = builder
+    r = Recipe(name="calibs", inputs=list(mock_l1_files), outputdir=str(tmp_path / "out"), steps=[
+        RecipeStep("correct_nonlinearity", calibs={"NonLinearityCalibration": "AUTOMATIC"}), RecipeStep("save")])
+    w._dirty = False
+    w.load_recipe(r)
+    got = []
+    w.queue_handler = lambda req: got.append(req) or True
+    asked = []
+    w._ask_incomplete = lambda inc, total: asked.append((inc, total)) or None
+    w.queue_recipe()
+    assert not asked and len(got) == 1
+    assert got[0].chains[0][0].steps[0].calibs == {"NonLinearityCalibration": nln}
+    assert w.recipe.steps[0].calibs == {"NonLinearityCalibration": "AUTOMATIC"}     # the editor copy keeps AUTOMATIC
+    # split batches are each looked up
+    w.set_split(max_files=1)
+    w.queue_recipe()
+    assert len(got) == 2 and [c[0].steps[0].calibs["NonLinearityCalibration"] for c in got[1].chains] == [nln, nln]
+    w.set_split()
+
+
+def test_builder_queue_asks_about_missing_calibrations(builder, mock_l1_files, nonlin_caldb, tmp_path):
+    from corgidrp_gui.core.recipes import Recipe, RecipeStep
+    w = builder
+    r = Recipe(name="psfsub", inputs=list(mock_l1_files), outputdir=str(tmp_path / "out"), steps=[
+        RecipeStep("do_psf_subtraction", calibs={"CoreThroughputCalibration": "AUTOMATIC"}), RecipeStep("save")])
+    w._dirty = False
+    w.load_recipe(r)
+    got, asked = [], []
+    w.queue_handler = lambda req: got.append(req) or True
+    for answer, n_queued in ((None, 0), ("queue", 1)):
+        w._ask_incomplete = lambda inc, total, a=answer: asked.append((len(inc), total)) or a
+        w.queue_recipe()
+        assert len(got) == n_queued
+    assert asked == [(1, 1), (1, 1)]
+    queued = got[0].chains[0][0]
+    assert queued.steps[0].calibs == {"CoreThroughputCalibration": "AUTOMATIC"}
+    assert queued.drpconfig.get("jit_calib_id") is True          # the walker retries the lookup at run time
+    assert "jit_calib_id" not in w.recipe.drpconfig
+    # a recipe that already asks for run-time lookup is queued as is, without asking
+    asked.clear()
+    w.recipe.drpconfig["jit_calib_id"] = True
+    w.queue_recipe()
+    assert not asked and len(got) == 2 and got[1].chains[0][0].steps[0].calibs == {"CoreThroughputCalibration": "AUTOMATIC"}

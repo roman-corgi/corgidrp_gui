@@ -39,3 +39,24 @@ def _close_qt_windows_at_exit():
         w.deleteLater()
     app.processEvents()
     app.processEvents()
+
+
+@pytest.fixture
+def nonlin_caldb(tmp_path, monkeypatch, mock_l1_files):
+    """A fresh CalDB holding a single NonLinearityCalibration, built from corgidrp's packaged
+    TVAC table; corgidrp is pointed at it. Returns (caldb path, calibration file path)."""
+    import numpy as np
+    import corgidrp
+    import corgidrp.caldb as caldb
+    import corgidrp.data as cdata
+    import corgidrp.mocks as mocks
+    path = str(tmp_path / "nonlin_caldb.csv")
+    monkeypatch.setattr(corgidrp, "caldb_filepath", path)
+    table = os.path.join(os.path.dirname(corgidrp.__file__), "data", "default_calibs", "nonlin_table_240322.txt")
+    pri, ext, _err, _dq = mocks.create_default_calibration_product_headers()
+    cal = cdata.NonLinearityCalibration(np.genfromtxt(table, delimiter=","), pri_hdr=pri, ext_hdr=ext,
+                                        input_dataset=cdata.Dataset(list(mock_l1_files)))
+    (tmp_path / "cals").mkdir()
+    cal.save(filedir=str(tmp_path / "cals"), filename="cgi_0000000000000000000_20260101t0000000_nln_cal.fits")
+    caldb.CalDB(path).create_entry(cal)
+    return path, cal.filepath
