@@ -102,3 +102,41 @@ def test_console_pause_and_abort(app, mock_l1_files, tmp_path, monkeypatch):
     assert win.wait_idle(120000)
     assert jobs[0].status == "aborted" and jobs[0].message == "aborted by user"
     win.close()
+
+
+def test_console_queue_files_resolves_calibrations(app, mock_l1_files, nonlin_caldb, tmp_path, monkeypatch):
+    monkeypatch.setenv("CORGIDRP_GUI_HOME", str(tmp_path / "home"))
+    from corgidrp_gui.core.queue import JobQueue
+    from corgidrp_gui.core.recipes import Recipe, RecipeStep
+    from corgidrp_gui.ui.console_window import ConsoleWindow
+    _db, nln = nonlin_caldb
+    out = str(tmp_path / "out")
+    files = {}
+    for name, label in (("nonlin", "NonLinearityCalibration"), ("psfsub", "CoreThroughputCalibration")):
+        step = "correct_nonlinearity" if name == "nonlin" else "do_psf_subtraction"
+        files[name] = str(tmp_path / f"{name}.json")
+        Recipe(name=name, inputs=list(mock_l1_files), outputdir=out,
+               steps=[RecipeStep(step, calibs={label: "AUTOMATIC"}), RecipeStep("save")]).save(files[name])
+    files["empty"] = str(tmp_path / "empty.json")
+    Recipe(name="empty", inputs=[], outputdir=out, steps=[RecipeStep("save")]).save(files["empty"])
+
+    win = ConsoleWindow(queue=JobQueue(), restore=False)
+    win.pause_btn.setChecked(True)
+    asked = []
+    paths = [files["nonlin"], files["psfsub"], files["empty"]]
+    win._ask_incomplete = lambda inc, total: asked.append(([r.name for r in inc], total)) or None
+    assert win.queue_recipe_files(paths) == [] and not win.queue.jobs
+    assert asked == [(["psfsub"], 2)]
+
+    win._ask_incomplete = lambda inc, total: "skip"
+    jobs = win.queue_recipe_files(paths)
+    assert [j.name for j in jobs] == ["nonlin"]
+    assert Recipe.load(jobs[0].recipe_path).steps[0].calibs == {"NonLinearityCalibration": nln}
+    assert Recipe.load(files["nonlin"]).steps[0].calibs == {"NonLinearityCalibration": "AUTOMATIC"}   # file untouched
+
+    win._ask_incomplete = lambda inc, total: "queue"
+    jobs = win.queue_recipe_files(paths)
+    assert [j.name for j in jobs] == ["nonlin", "psfsub"]
+    psf = Recipe.load(jobs[1].recipe_path)
+    assert psf.steps[0].calibs == {"CoreThroughputCalibration": "AUTOMATIC"} and psf.drpconfig.get("jit_calib_id") is True
+    win.close()

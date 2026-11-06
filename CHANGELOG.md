@@ -6,6 +6,8 @@
   split part, as corgidrp's walker does for recipes it generates. Before, they were queued as
   AUTOMATIC and the step failed opening a file named "AUTOMATIC" (unless jit_calib_id was on).
   When the CalDB lacks a required calibration, queueing asks first, as the Parser does.
+- Status Console: recipe files queued from the Queue menu, by drag and drop or with `--queue`
+  get the same CalDB lookup and missing-calibration question.
 - Midnight theme: a calm dark theme without glow or neon.
 - CalDB viewer: Remove missing entries button.
 - Status Console: unticking "Show only the selected job" restores the combined log.

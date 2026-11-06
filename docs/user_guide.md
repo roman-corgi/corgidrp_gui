@@ -190,7 +190,10 @@ seconds), *Re-queue* (also revives skipped dependents), ▲ ▼ to reorder waiti
 *Clear finished*, *Open in Builder*, *Workers* for how many recipes run at once. The right-hand
 panel shows the selected or running job: step strip, progress, inputs, explicitly named
 calibration files, output folder, process id and exit code. Recipe JSON files can be dropped
-onto the window or added from the Queue menu; they need inputs and an output directory.
+onto the window, added from the Queue menu or given with `--queue`; they need inputs and an
+output directory. Their `AUTOMATIC` calibrations are looked up in the CalDB as for *Save &
+queue* in the Builder, with the same question when one is missing; the files themselves are not
+changed.
 
 ## Calibration DB
 

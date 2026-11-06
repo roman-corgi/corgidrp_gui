@@ -130,10 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         from .core.recipes import Recipe
         tools.open_builder().load_recipe(Recipe.load(path))
     if args.queue:
-        from .core.queue_items import QueueRequest
-        from .core.recipes import Recipe
-        recipes = [Recipe.load(p) for p in args.queue]
-        tools.open_console().enqueue(QueueRequest(chains=[[r] for r in recipes], outputdir=recipes[0].outputdir, source="file"))
+        tools.open_console().queue_recipe_files(list(args.queue))
     return app.exec()
 
 

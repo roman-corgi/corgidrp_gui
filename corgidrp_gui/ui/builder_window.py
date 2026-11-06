@@ -8,9 +8,7 @@ queue through a QueueRequest.
 """
 from __future__ import annotations
 
-import contextlib
 import datetime as _dt
-import io
 import json
 import os
 
@@ -20,14 +18,14 @@ from .. import theming
 from ..backend import default_backend
 from ..core import catalog_cache
 from ..core.queue_items import QueueRequest
-from ..core.recipes import (Issue, Recipe, RecipeStep, guess_start_level, jit_calib_id_on,
-                            resolve_calibrations, validate_recipe)
+from ..core.recipes import Issue, Recipe, RecipeStep, guess_start_level, validate_recipe
 from ..core.splitting import SplitSpec, batch_recipe_name, split_paths
 from ..core.steps import MISSING, SAVE_STEP_NAME, StepCatalog
 from ..core.values import format_value
 from .base import ThemedWindow
 from .builder_models import (ArgTableModel, CatalogFilter, RecipeStepsModel, RecipeStepsView,
                              StepCatalogModel, StepInfoRole, ValueDelegate, needs_popout)
+from .calib_check import ask_incomplete, prepare_for_queue
 from .dialogs import InputsDialog, RecipePreviewDialog, TemplateChooserDialog, text_dialog
 from .queue_bridge import dump_recipes
 from .widgets.themed import Chip, ElidedLabel, Panel, SectionLabel
@@ -979,29 +977,10 @@ class BuilderWindow(ThemedWindow):
         if not self.recipe.outputdir:
             QtWidgets.QMessageBox.warning(self, "Output directory", "Set an output directory first.")
             return
-        recipes = self.split_recipes()
-        if not jit_calib_id_on(self.recipe):
-            # the walker only fills AUTOMATIC calibrations in when it generates a recipe itself
-            # (or with jit_calib_id on), so the queued copies get them here
-            try:
-                resolved = self._resolve_calibrations(recipes)
-            except Exception as exc:  # noqa: BLE001 - unreadable input, broken CalDB, ...
-                QtWidgets.QMessageBox.warning(self, "Cannot queue",
-                                              f"Looking up the AUTOMATIC calibrations failed:\n{type(exc).__name__}: {exc}")
-                return
-            if resolved is None:      # cancelled
-                return
-            recipes = resolved
-            incomplete = [r for r in recipes if r.unresolved]
-            if incomplete:
-                choice = self._ask_incomplete(incomplete, len(recipes))
-                if choice is None:
-                    return
-                if choice == "skip":
-                    recipes = [r for r in recipes if not r.unresolved]
-                else:
-                    for r in incomplete:
-                        r.drpconfig["jit_calib_id"] = True   # the walker retries the lookup when the step runs
+        # the queued copies get AUTOMATIC calibrations filled in; the editor's recipe keeps them
+        recipes = prepare_for_queue(self, self.split_recipes(), ask=self._ask_incomplete)
+        if not recipes:
+            return
         req = QueueRequest(chains=[[r] for r in recipes], outputdir=self.recipe.outputdir, source="builder")
         handled = bool(self.queue_handler(req)) if self.queue_handler else False
         self.recipes_queued.emit(req)
@@ -1013,63 +992,8 @@ class BuilderWindow(ThemedWindow):
         self._dirty = False
         self._refresh_status()
 
-    def _resolve_calibrations(self, recipes: list[Recipe]) -> list[Recipe] | None:
-        """Fill in AUTOMATIC calibrations on each recipe from the CalDB, with a progress
-        dialog for split recipes. Returns the recipes, or None if the user cancelled."""
-        import corgidrp.caldb as caldb
-        if not any("AUTOMATIC" in str(spec).upper() for r in recipes for s in r.steps for spec in (s.calibs or {}).values()):
-            return recipes
-        progress = None
-        if len(recipes) > 1:
-            progress = QtWidgets.QProgressDialog("Looking up calibrations in the CalDB…", "Cancel", 0, len(recipes), self)
-            progress.setWindowTitle("Queue recipes")
-            progress.setWindowModality(Qt.WindowModality.WindowModal)
-            progress.setMinimumDuration(500)
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                db = caldb.CalDB()
-                for i, r in enumerate(recipes):
-                    if progress is not None:
-                        progress.setValue(i)
-                        QtWidgets.QApplication.processEvents()
-                        if progress.wasCanceled():
-                            return None
-                    resolve_calibrations(r, db)
-        finally:
-            if progress is not None:
-                progress.close()
-        return recipes
-
     def _ask_incomplete(self, incomplete: list[Recipe], total: int) -> str | None:
-        """Ask what to do with recipes whose required calibrations the CalDB lacks.
-        Returns "queue", "skip" (queue only the complete ones) or None to cancel."""
-        missing: dict[str, set[str]] = {}
-        for r in incomplete:
-            for step, label in r.unresolved:
-                missing.setdefault(label, set()).add(step)
-        names = "\n".join(f"• {label} (for {', '.join(sorted(steps))})" for label, steps in sorted(missing.items()))
-        n = len(incomplete)
-        who = "This recipe needs" if total == 1 else (f"All {total} recipes need" if n == total else f"{n} of {total} recipes need")
-        box = QtWidgets.QMessageBox(self)
-        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        box.setWindowTitle("Missing calibrations")
-        box.setText(f"{who} calibrations that the CalDB does not have for these files:")
-        box.setInformativeText(names + "\n\nIf you queue them anyway, each step looks its calibration up again when "
-                               "it runs, so it succeeds only if a job earlier in the queue makes one. "
-                               "Otherwise add the calibration to the CalDB, or choose a file in the step's calibrations.")
-        queue_btn = box.addButton("Queue anyway" if n == total else "Queue all", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        skip_btn = None
-        if n < total:
-            skip_btn = box.addButton(f"Queue the other {total - n}", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
-        cancel_btn = box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(cancel_btn)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is queue_btn:
-            return "queue"
-        if skip_btn is not None and clicked is skip_btn:
-            return "skip"
-        return None
+        return ask_incomplete(self, incomplete, total)
 
     # ----------------------------------------------------------------- refresh
     def _refresh_all(self):

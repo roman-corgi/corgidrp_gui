@@ -16,6 +16,7 @@ from ..backend import default_backend
 from ..core.queue import JobQueue, RecipeJob
 from ..core.queue_items import QueueRequest
 from .base import ThemedWindow
+from .calib_check import ask_incomplete, prepare_for_queue
 from .dialogs import RecipePreviewDialog, text_dialog
 from .widgets.flow import FlowLayout
 from .widgets.themed import Chip, ElidedLabel, Panel, SectionLabel, step_label
@@ -309,12 +310,11 @@ class ConsoleWindow(ThemedWindow):
         self._update_all()
         return jobs
 
-    def add_recipe_file_dialog(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Queue recipe files", self.backend.home(), "Recipe JSON (*.json)")
-        if not paths:
-            return
+    def queue_recipe_files(self, paths: list[str]) -> list[RecipeJob]:
+        """Queue recipe JSON files, each as its own job. AUTOMATIC calibrations are
+        filled in from the CalDB first (the files on disk are not changed)."""
         from ..core.recipes import Recipe
-        chains = []
+        recipes = []
         for p in paths:
             try:
                 r = Recipe.load(p)
@@ -324,28 +324,30 @@ class ConsoleWindow(ThemedWindow):
             if not r.inputs or not r.outputdir:
                 self.log_line(f"skipped {os.path.basename(p)}: recipe needs inputs and an outputdir (edit it in the Builder)")
                 continue
-            chains.append([r])
-        if chains:
-            self.enqueue(QueueRequest(chains=chains, outputdir=chains[0][0].outputdir, source="file"))
+            recipes.append(r)
+        if recipes:
+            recipes = prepare_for_queue(self, recipes, ask=self._ask_incomplete)
+        if not recipes:
+            return []
+        return self.enqueue(QueueRequest(chains=[[r] for r in recipes], outputdir=recipes[0].outputdir, source="file"))
+
+    def _ask_incomplete(self, incomplete, total: int) -> str | None:
+        return ask_incomplete(self, incomplete, total)
+
+    def add_recipe_file_dialog(self):
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Queue recipe files", self.backend.home(), "Recipe JSON (*.json)")
+        if paths:
+            self.queue_recipe_files(paths)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() and any(u.toLocalFile().endswith(".json") for u in event.mimeData().urls()):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        from ..core.recipes import Recipe
-        chains = []
-        for u in event.mimeData().urls():
-            p = u.toLocalFile()
-            if p.endswith(".json"):
-                try:
-                    r = Recipe.load(p)
-                    if r.inputs and r.outputdir:
-                        chains.append([r])
-                except (OSError, ValueError):
-                    pass
-        if chains:
-            self.enqueue(QueueRequest(chains=chains, outputdir=chains[0][0].outputdir, source="file"))
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile().endswith(".json")]
+        if paths:
+            event.acceptProposedAction()
+            self.queue_recipe_files(paths)
 
     # --------------------------------------------------------------- running
     def pump(self):
