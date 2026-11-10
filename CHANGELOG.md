@@ -20,6 +20,11 @@
 - Parser: a missing required calibration no longer means no recipe. The group is marked
   *incomplete*, the recipe is made with that calibration left AUTOMATIC (and jit_calib_id on),
   the Builder flags each gap, and queueing asks before including it.
+- Dataset Summary window: groups any set of files by the keywords corgidrp branches and
+  splits on (presets or your own), folds levels where files agree, shows per-group keyword
+  distributions and what varies, and hands groups to the Parser. `--summarize PATH`.
+- Header reading is about 25x faster on reduced data: the long RECIPE/RECIPE2/... JSON cards
+  keep only the recipe name.
 - docs/remote_xpra.md rewritten from a real setup: focal repository recipe, Xpra-Light
   client, start-child by absolute path (no wrapper script), troubleshooting section.
 

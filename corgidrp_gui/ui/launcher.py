@@ -22,6 +22,7 @@ TOOLS = [
     ("builder", "Recipe Builder", "compose and edit recipes", 3),
     ("console", "Status Console", "queue, progress, logs", 4),
     ("caldb", "Calibration DB", "browse, rescan, test matches", 5),
+    ("dataset", "Dataset Summary", "what is in a pile of files", 7),
 ]
 
 

@@ -289,3 +289,56 @@ def test_parser_window_incomplete_group(app, mock_l1_files, tiny_template, tmp_p
     win.queue_all()
     assert [c[0].name for c in queued[0].chains] == [a.chains[0][0].name, "complete_one"]
     win.close()
+
+
+def test_dataset_window(app, mock_l1_files, tmp_path):
+    from corgidrp_gui.ui.dataset_window import DatasetWindow, MODE_VARYING
+    from corgidrp_gui.core import dataset as ds
+    win = DatasetWindow()
+    win.show()
+    assert not win.parser_btn.isEnabled()
+    win.add_files(mock_l1_files)
+    assert win.jobs.wait_idle(120000)
+    assert len(win.records) == 2 and win.tree.topLevelItemCount() == 1
+    top = win.tree.topLevelItem(0)
+    assert top.text(1) == "2" and "DATALVL = L1" in top.text(2)
+    assert win.selected_node() is win.root and win.file_model.rowCount() == 2
+    assert win.kw_table.rowCount() == len(ds.KEYWORDS)
+    assert "2 files" in win.totals_label.text()
+    # presets and custom grouping
+    win.set_hierarchy(["VISITID", "EXPTIME"])
+    assert win.preset_combo.currentText() == "Custom"
+    win.preset_combo.setCurrentText("Visit")
+    win._on_preset()
+    assert win.hierarchy() == ds.PRESETS["Visit"]
+    win.add_grouping_key("FILENAME", first=True)
+    assert win.hierarchy()[0] == "FILENAME" and win.root.children and len(win.root.children) == 2
+    win.tree.setCurrentItem(win.tree.topLevelItem(0).child(1))
+    assert win.file_model.rowCount() == 1
+    win.remove_grouping_key("FILENAME")
+    assert "FILENAME" not in win.hierarchy()
+    # every-varying mode, text summary, file list, hand-off to the Parser
+    win.mode_combo.setCurrentText(MODE_VARYING)
+    assert not win.hide_constant_cb.isEnabled()
+    assert win.summary_text().startswith("2 files")
+    win.tree.setCurrentItem(win.tree.topLevelItem(0))
+    out = win.save_file_list(str(tmp_path / "list.txt"))
+    assert sorted(open(out).read().split()) == sorted(mock_l1_files)
+    sent = []
+    win.parser_handler = sent.append
+    win.send_selected_to_parser()
+    assert sorted(sent[0]) == sorted(mock_l1_files)
+    win.clear_files()
+    assert win.tree.topLevelItemCount() == 0 and win.file_model.rowCount() == 0
+    # the Parser hands its records over without re-reading
+    from corgidrp_gui.ui.parser_window import ParserWindow
+    pw = ParserWindow()
+    got = []
+    pw.summary_handler = got.append
+    pw.add_files(mock_l1_files)
+    assert pw.jobs.wait_idle(120000)
+    pw.show_summary()
+    win.set_records(got[0])
+    assert len(win.records) == 2 and win.root.n_files == 2
+    pw.close()
+    win.close()

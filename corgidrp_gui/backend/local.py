@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 from .base import Backend, FileEntry, FitsHeaders
@@ -55,11 +56,29 @@ class LocalBackend(Backend):
         return os.path.expanduser("~")
 
 
+_RECIPE_CARD = re.compile(r"^RECIPE\d*$")
+_RECIPE_NAME = re.compile(r'"name"\s*:\s*"([^"]+)"')
+
+
 def _header_to_dict(header) -> dict:
+    """Header cards as a dict, skipping COMMENT/HISTORY.
+
+    corgidrp writes each recipe a file went through into RECIPE, RECIPE2, ... as JSON
+    long strings spread over hundreds of CONTINUE cards; parsing those values dominates
+    header reading (about 25x slower). For those keywords only the recipe's name is kept,
+    taken from the first card image.
+    """
     d = {}
     for card in header.cards:
         k = card.keyword
-        if not k or k in ("COMMENT", "HISTORY", ""):
+        if not k or k in ("COMMENT", "HISTORY"):
             continue
+        if _RECIPE_CARD.match(k):
+            image = getattr(card, "_image", None) or ""
+            if len(image) > 80:
+                m = _RECIPE_NAME.search(image[:80])
+                if m:
+                    d[k] = m.group(1)
+                    continue
         d[k] = card.value
     return d

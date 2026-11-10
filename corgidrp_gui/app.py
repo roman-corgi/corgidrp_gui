@@ -41,6 +41,7 @@ class ToolWindows:
         launcher.set_tool_handler("builder", self.open_builder)
         launcher.set_tool_handler("console", self.open_console)
         launcher.set_tool_handler("caldb", self.open_caldb)
+        launcher.set_tool_handler("dataset", self.open_dataset)
         launcher.catalog_rebuilt.connect(self._on_catalog_rebuilt)
 
     def _show(self, key, factory):
@@ -60,6 +61,7 @@ class ToolWindows:
             w = ParserWindow()
             w.builder_handler = lambda recipe: self.open_builder().load_recipe(recipe)
             w.queue_handler = self._queue
+            w.summary_handler = lambda records: self.open_dataset().set_records(records)
             return w
         return self._show("parser", factory)
 
@@ -85,6 +87,15 @@ class ToolWindows:
         from .ui.caldb_window import CalDBWindow
         return self._show("caldb", CalDBWindow)
 
+    def open_dataset(self):
+        from .ui.dataset_window import DatasetWindow
+
+        def factory():
+            w = DatasetWindow()
+            w.parser_handler = lambda paths: self.open_parser().add_files(paths)
+            return w
+        return self._show("dataset", factory)
+
     def _queue(self, req) -> bool:
         """Parser/Builder queue handler: hand the request to the console and show it."""
         self.open_console().enqueue(req)
@@ -106,10 +117,12 @@ def parse_args(argv: list[str] | None = None):
     ap = argparse.ArgumentParser(prog="corgidrp-gui", description="Desktop GUI wrapper around corgidrp.")
     ap.add_argument("--version", action="version", version=f"corgidrp_gui {__version__}")
     ap.add_argument("--theme", metavar="NAME", help="start with this theme for this session only (roman, console, neon, homepage, or a .toml path)")
-    ap.add_argument("--tool", choices=["parser", "builder", "console", "caldb"], action="append",
+    ap.add_argument("--tool", choices=["parser", "builder", "console", "caldb", "dataset"], action="append",
                     help="open this tool at startup as well as the launcher (repeatable)")
     ap.add_argument("--recipe", metavar="JSON", action="append", help="open this recipe file in the Builder")
     ap.add_argument("--files", metavar="FITS", nargs="+", help="load these FITS files into the Parser")
+    ap.add_argument("--summarize", metavar="PATH", nargs="+",
+                    help="open the Dataset Summary on these FITS files or folders")
     ap.add_argument("--queue", metavar="JSON", action="append", help="queue this recipe file in the Status Console")
     return ap.parse_args(argv)
 
@@ -123,9 +136,19 @@ def main(argv: list[str] | None = None) -> int:
     win.tools = tools = ToolWindows(win)
     win.show()
     for key in args.tool or []:
-        {"parser": tools.open_parser, "builder": tools.open_builder, "console": tools.open_console, "caldb": tools.open_caldb}[key]()
+        {"parser": tools.open_parser, "builder": tools.open_builder, "console": tools.open_console,
+         "caldb": tools.open_caldb, "dataset": tools.open_dataset}[key]()
     if args.files:
         tools.open_parser().add_files(list(args.files))
+    if args.summarize:
+        import os
+        dw = tools.open_dataset()
+        folders = [p for p in args.summarize if os.path.isdir(p)]
+        files = [p for p in args.summarize if not os.path.isdir(p)]
+        if folders:
+            from .core.parser import files_in_folders
+            files += files_in_folders(folders)
+        dw.add_files(files)
     for path in args.recipe or []:
         from .core.recipes import Recipe
         tools.open_builder().load_recipe(Recipe.load(path))

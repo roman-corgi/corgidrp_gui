@@ -23,6 +23,7 @@ Options:
     corgidrp-gui --tool parser --files *.fits   # open the Parser with files loaded
     corgidrp-gui --recipe my_recipe.json        # open a recipe in the Builder
     corgidrp-gui --queue a.json --queue b.json  # queue recipe files straight away
+    corgidrp-gui --summarize /data/visit_dir    # Dataset Summary of a folder (or files)
 
 Recipes can also be run without the GUI, exactly as the console does it:
 
@@ -194,6 +195,37 @@ onto the window, added from the Queue menu or given with `--queue`; they need in
 output directory. Their `AUTOMATIC` calibrations are looked up in the CalDB as for *Save &
 queue* in the Builder, with the same question when one is missing; the files themselves are not
 changed.
+
+## Dataset Summary
+
+What is in a pile of files, before deciding what to run. Add files or folders (or drop them
+on the window); only headers are read, at a few milliseconds per file.
+
+**Groups** (left) is a tree built along the *Group by* keywords, outermost first. The default
+grouping follows corgidrp: the keywords `guess_template` branches on (DATALVL, VISTYPE,
+DPAMNAME, ISPC), the filter band, then VISITID, PSFREF and SATSPOTS, which the L3→L4 steps
+split and match frames by. Other presets group by visit, target and roll, detector settings
+(EXPTIME, EMGAIN_C, KGAINPAR, the split the dark steps make), optics, or processing history.
+Type any header keywords into the field to make your own; `PROCESSING` groups by the chain of
+recipes the files went through (RECIPE, RECIPE2, ...).
+
+With *Fold levels where all files agree* (on by default) a keyword with only one value in a
+group adds no level; it shows under *Same for all* instead, so the tree branches only where
+the files actually differ. *Varies within* names the corgidrp-relevant keywords that still
+take several values inside a group, which is where to look for frames that should not be
+combined (for example a few frames at a different EM gain).
+
+**Keywords** (top right) shows, for the selected group, every keyword corgidrp uses with its
+values and file counts, varying ones first and in bold. Hover for what corgidrp does with a
+keyword. Switch to *Every keyword that varies* to scan all header keywords; timestamps and
+other per-file values are summarised as a range. Double-click a keyword to add it to the
+grouping, or right-click to put it first or remove it.
+
+**Files** (bottom right) lists the selected group's files. *Send group to Recipe Parser*
+loads them into the Parser; *Copy summary* puts a plain-text summary (totals, the tree, what
+varies and what is the same everywhere) on the clipboard; *Save file list…* and *Copy paths*
+export the selected group. From the Parser, *File › Dataset summary of these files* (Ctrl+I)
+opens the summary of what is loaded there.
 
 ## Calibration DB
 

@@ -202,7 +202,7 @@ def test_launcher_live_switch_and_signals(app):
     win.set_tool_handler("parser", lambda: requested.append("handled"))
     win.tiles["parser"].click()
     assert sorted(requested) == ["handled", "parser"]
-    assert len(TOOLS) == 4
+    assert len(TOOLS) == 5
     # switching theme from outside updates the combo and the rainbow rule
     theming.theme_manager().set_theme("homepage", persist=False)
     app.processEvents()

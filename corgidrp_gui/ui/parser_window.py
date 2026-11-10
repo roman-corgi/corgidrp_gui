@@ -50,6 +50,7 @@ class ParserWindow(ThemedWindow):
         self._split = SplitSpec()
         self.queue_handler = None      # callable(QueueRequest) -> bool; default saves JSON files
         self.builder_handler = None    # callable(Recipe)
+        self.summary_handler = None    # callable(list[FileRecord]); opens the Dataset Summary
         self.file_model = FileTableModel()
         self.group_model = GroupTableModel()
         self._build_menus()
@@ -66,6 +67,7 @@ class ParserWindow(ThemedWindow):
         self._act(m, "Add by wildcard…", self.add_wildcard_dialog, "Ctrl+W")
         m.addSeparator()
         self._act(m, "Save all recipes to folder…", self.save_all_recipes)
+        self._act(m, "Dataset summary of these files…", self.show_summary, "Ctrl+I")
         m.addSeparator()
         self._act(m, "Close", self.close, "Ctrl+Q")
         e = self.add_menu("&Edit")
@@ -604,6 +606,11 @@ class ParserWindow(ThemedWindow):
         self.open_in_builder.emit(recipe)
         if self.builder_handler is None and self.receivers(self.open_in_builder) <= 0:
             QtWidgets.QMessageBox.information(self, "Recipe Builder", "The Recipe Builder arrives in phase 3.")
+
+    def show_summary(self):
+        """Open the loaded files in the Dataset Summary (headers are not read again)."""
+        if self.summary_handler is not None and self.file_model.records:
+            self.summary_handler(list(self.file_model.records))
 
     def queue_selected(self):
         self._queue([a for a in self.selected_analyses()])
