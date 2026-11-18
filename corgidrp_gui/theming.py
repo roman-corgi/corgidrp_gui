@@ -24,6 +24,10 @@ import jinja2
 PACKAGE_DIR = Path(__file__).resolve().parent
 THEMES_DIR = PACKAGE_DIR / "themes"
 FONTS_DIR = PACKAGE_DIR / "fonts"
+#: the CorGI logo (launcher title band, window and dock icon)
+LOGO_PATH = PACKAGE_DIR / "assets" / "corgi_logo.png"
+#: the Roman Coronagraph logo (launcher title band, upper right)
+ROMAN_LOGO_PATH = PACKAGE_DIR / "assets" / "roman_cgi_logo.png"
 USER_THEMES_DIR = Path.home() / ".corgidrp_gui" / "themes"
 DEFAULT_THEME = "roman"
 SETTINGS_ORG = "corgidrp_gui"

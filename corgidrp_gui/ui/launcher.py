@@ -17,6 +17,11 @@ REBUILD_TEXT = "Rebuild step catalog\u2026"
 FLAG_KEYS = ("jit_calib_id", "skip_missing_cal_steps", "enforce_template_structure")
 
 # (key, title, subtitle, phase that delivers it)
+#: height of the logo in the title band, in points
+LOGO_SIZE = 72
+#: height of the Roman Coronagraph logo above the subtitle, in points
+ROMAN_LOGO_SIZE = 44
+
 TOOLS = [
     ("parser", "Recipe Parser", "files → recommended recipes", 2),
     ("builder", "Recipe Builder", "compose and edit recipes", 3),
@@ -175,13 +180,28 @@ class LauncherWindow(ThemedWindow):
         band = QtWidgets.QFrame()
         band.setProperty("role", "titlebar")
         bl = QtWidgets.QHBoxLayout(band)
+        self.logo = self._logo_label(theming.LOGO_PATH, LOGO_SIZE, "corgiLogo",
+                                     "CorGI: the Roman Coronagraph Instrument")
+        if self.logo is not None:
+            bl.addWidget(self.logo, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+            bl.addSpacing(10)
         title = QtWidgets.QLabel("corgidrp GUI")
         title.setProperty("role", "title")
         sub = QtWidgets.QLabel("Roman Coronagraph data reduction")
         sub.setProperty("role", "subtitle")
         bl.addWidget(title)
         bl.addStretch(1)
-        bl.addWidget(sub, 0, QtCore.Qt.AlignmentFlag.AlignBottom)
+        # upper right: the Roman Coronagraph logo above the subtitle
+        right = QtWidgets.QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(4)
+        self.roman_logo = self._logo_label(theming.ROMAN_LOGO_PATH, ROMAN_LOGO_SIZE, "romanLogo",
+                                           "Roman Space Telescope Coronagraph Instrument", radius=8)
+        if self.roman_logo is not None:
+            right.addWidget(self.roman_logo, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        right.addStretch(1)
+        right.addWidget(sub, 0, QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignBottom)
+        bl.addLayout(right)
         self._band_layout = bl
         outer.addWidget(band)
 
@@ -257,6 +277,34 @@ class LauncherWindow(ThemedWindow):
 
         self.setCentralWidget(central)
         self._apply_density(theme)
+
+    def _logo_label(self, path, size: int, name: str, tip: str, radius: int = 0) -> QtWidgets.QLabel | None:
+        """An image ``size`` points tall, rendered at the screen's pixel density; with ``radius``,
+        its corners are rounded (for logos that come on their own white background)."""
+        src = QtGui.QPixmap(str(path))
+        if src.isNull():
+            return None
+        dpr = max(1.0, self.devicePixelRatioF())
+        pix = src.scaledToHeight(int(size * dpr), QtCore.Qt.TransformationMode.SmoothTransformation)
+        if radius:
+            out = QtGui.QPixmap(pix.size())
+            out.fill(QtCore.Qt.GlobalColor.transparent)
+            p = QtGui.QPainter(out)
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            clip = QtGui.QPainterPath()
+            clip.addRoundedRect(QtCore.QRectF(out.rect()), radius * dpr, radius * dpr)
+            p.setClipPath(clip)
+            p.drawPixmap(0, 0, pix)
+            p.end()
+            pix = out
+        pix.setDevicePixelRatio(dpr)
+        lab = QtWidgets.QLabel()
+        lab.setObjectName(name)
+        lab.setPixmap(pix)
+        lab.setFixedSize(pix.deviceIndependentSize().toSize())
+        lab.setToolTip(tip)
+        lab.setStyleSheet("background: transparent; border: none; padding: 0;")
+        return lab
 
     def _apply_density(self, theme) -> None:
         pad, gap = theme.density.padding, theme.density.gap

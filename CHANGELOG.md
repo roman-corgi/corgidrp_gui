@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CorGI logo in the Launcher's title band, and as the window and dock icon; the Roman
+  Coronagraph logo in the band's upper right.
 - Recipe Builder: *Save & queue* fills in AUTOMATIC calibrations from the CalDB first, for each
   split part, as corgidrp's walker does for recipes it generates. Before, they were queued as
   AUTOMATIC and the step failed opening a file named "AUTOMATIC" (unless jit_calib_id was on).

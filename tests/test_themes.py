@@ -190,7 +190,7 @@ def test_windows_construct_and_show(app, qt_messages, key):
 
 
 def test_launcher_live_switch_and_signals(app):
-    from corgidrp_gui.ui.launcher import TOOLS, LauncherWindow
+    from corgidrp_gui.ui.launcher import LOGO_SIZE, ROMAN_LOGO_SIZE, TOOLS, LauncherWindow
     theming.theme_manager().set_theme("roman", persist=False)
     win = LauncherWindow()
     win.show()
@@ -203,6 +203,12 @@ def test_launcher_live_switch_and_signals(app):
     win.tiles["parser"].click()
     assert sorted(requested) == ["handled", "parser"]
     assert len(TOOLS) == 5
+    # the CorGI logo sits in the title band; the app uses it as its window icon
+    assert win.logo is not None and not win.logo.pixmap().isNull()
+    assert win.logo.height() == LOGO_SIZE
+    assert win.roman_logo is not None and win.roman_logo.height() == ROMAN_LOGO_SIZE
+    from qtpy import QtWidgets
+    assert not QtWidgets.QApplication.instance().windowIcon().isNull()
     # switching theme from outside updates the combo and the rainbow rule
     theming.theme_manager().set_theme("homepage", persist=False)
     app.processEvents()

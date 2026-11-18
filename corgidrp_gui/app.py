@@ -21,6 +21,9 @@ def make_app(argv: list[str] | None = None, theme: str | None = None,
         app = QtWidgets.QApplication(list(argv if argv is not None else sys.argv))
     app.setApplicationName("corgidrp GUI")
     app.setOrganizationName(theming.SETTINGS_ORG)
+    if theming.LOGO_PATH.exists():
+        from qtpy import QtGui
+        app.setWindowIcon(QtGui.QIcon(str(theming.LOGO_PATH)))
     manager = theming.theme_manager()
     if theme is not None:
         manager.set_theme(theme, persist=False)

@@ -30,7 +30,7 @@ corgidrp-gui-run = "corgidrp_gui.runner:main"
 include = ["corgidrp_gui*"]
 
 [tool.setuptools.package-data]
-corgidrp_gui = ["themes/*.toml", "themes/*.qss", "themes/*.j2", "fonts/*.ttf", "fonts/*.otf", "fonts/LICENSE*"]
+corgidrp_gui = ["themes/*.toml", "themes/*.qss", "themes/*.j2", "fonts/*.ttf", "fonts/*.otf", "fonts/LICENSE*", "assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
